@@ -239,6 +239,36 @@ public class LibraryActivity extends Activity implements
 
     @Override public void startDownloadFromChat(ModelCatalog.Model m) { startDownload(m); }
 
+    // ---------- VoiceCatalog (v1.1.7: STT on-device) ----------
+
+    /** Download model suara via DownloadService — pola sama dengan LLM. */
+    public void startVoiceDownload(VoiceCatalog.VoiceModel m) {
+        ensureNotificationPermission();
+        Intent i = new Intent(this, DownloadService.class);
+        i.setAction(DownloadService.ACTION_START);
+        i.putExtra(DownloadService.EXTRA_ID, m.id);
+        i.putExtra(DownloadService.EXTRA_URL, m.url);
+        i.putExtra(DownloadService.EXTRA_NAME, m.name);
+        i.putExtra(DownloadService.EXTRA_SIZE, m.sizeBytes);
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
+        else startService(i);
+        Toast.makeText(this, "Downloading " + m.name, Toast.LENGTH_SHORT).show();
+    }
+
+    /** Hapus file model suara (kartu voice di Library). */
+    public void deleteVoiceModel(String id) {
+        File dir = new File(getFilesDir(), "models");
+        new File(dir, id + ".bin").delete();
+        new File(dir, id + ".part").delete();
+        DownloadState.remove(id);
+        DownloadState.bumpVersion();
+    }
+
+    /** Model suara siap dipakai (file .bin lengkap). */
+    public boolean isVoiceModelReady() {
+        return VoiceCatalog.isReady(this, VoiceCatalog.whisperTiny());
+    }
+
     // ---------- lainnya ----------
 
     /** POST_NOTIFICATIONS runtime request on Android 13+ before the first download. */

@@ -23,3 +23,15 @@ target_link_libraries(rlnova-bridge
         llama
         android
         log)
+
+# ------------------------------------------------------------------
+# whisper (STT v1.1.7) — STATIC single .so.
+# libwhisper.a + ggml 0.27 statik di-link ke satu .so dengan
+# -fvisibility=hidden: tidak ada simbol ggml/whisper yang terekspor,
+# jadi TIDAK mungkin tabrakan dengan ggml 0.16 milik llama (shared) di
+# APK yang sama. GGML_BACKEND_DL=OFF -> registry tidak pernah dlopen.
+# NB: target ini tidak dibangun lewat CMake di VM (Java tidak bisa
+# network, tapi lebih penting: toolchain NDK dipanggil langsung) —
+# build dilakukan oleh build-whisper.sh; target ini hanya dokumentasi
+# + path include konsisten untuk editor.
+# ------------------------------------------------------------------

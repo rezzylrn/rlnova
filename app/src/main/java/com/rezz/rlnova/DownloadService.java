@@ -247,7 +247,11 @@ public class DownloadService extends Service {
                     fail(st, "Size mismatch: " + out.length() + " != " + st.total, id);
                     return;
                 }
-                File dst = new File(dir, id + ".gguf");
+                // v1.1.7: ekstensi final mengikuti id — LLM pakai <id>.gguf,
+                // model suara (whisper) pakai <id>.bin. LLM id-nya mengandung
+                // "-q" kuantisasi... lebih aman: id voice punya prefix "voice-".
+                String ext = id.startsWith("voice-") ? ".bin" : ".gguf";
+                File dst = new File(dir, id + ext);
                 if (!out.renameTo(dst)) {
                     copy(out, dst);
                     out.delete();

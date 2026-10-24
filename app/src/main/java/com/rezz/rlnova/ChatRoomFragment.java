@@ -125,6 +125,7 @@ public class ChatRoomFragment extends Fragment {
     private TextView toolbarTitle;      // Fitur A: tappable model name
     private EditText input;
     private TextView sendBtn;
+    private TextView micBtn;            // v1.1.7: tombol mic (STT on-device)
     private TextView streamingBubble;   // kartu AI yang sedang di-stream
     private TextView thinkingHeader;    // header collapsible "Thinking"
     private TextView thinkingBody;      // isi think (collapse/expand)
@@ -337,6 +338,19 @@ public class ChatRoomFragment extends Fragment {
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         ilp.rightMargin = dp(8);
         composer.addView(input, ilp);
+
+        // ---- v1.1.7: tombol mic (STT on-device) di kiri tombol Send ----
+        micBtn = new TextView(ctx);
+        micBtn.setText("Mic");
+        micBtn.setTextSize(13);
+        micBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        micBtn.setTextColor(0xFFEDF1F7);
+        micBtn.setGravity(Gravity.CENTER);
+        micBtn.setBackgroundResource(R.drawable.bg_composer);
+        micBtn.setOnClickListener(v -> onMicClicked());
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        mlp.rightMargin = dp(8);
+        composer.addView(micBtn, mlp);
 
         sendBtn = new TextView(ctx);
         sendBtn.setText("Send");
@@ -972,6 +986,218 @@ public class ChatRoomFragment extends Fragment {
         int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
         int h = id > 0 ? getResources().getDimensionPixelSize(id) : dp(24);
         return dp(8) + h;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        // v1.1.7: hasil runtime permission RECORD_AUDIO (perm mic pertama kali).
+        if (requestCode != REQ_RECORD_AUDIO) return;
+        if (getActivity() == null) return;
+        if (requestCode == REQ_RECORD_AUDIO
+                && grantResults != null && grantResults.length > 0
+                && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            onMicClicked(); // izin baru saja diberikan — lanjut mulai rekam
+        } else {
+            toast("Microphone permission is needed for voice input");
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        stopRecording();       // buang recorder + thread-nya
+        freeWhisper();         // bebaskan model STT bila dimuat
+        super.onDestroy();
+    }
+
+    // ====================================================== v1.1.7: mic/STT
+
+    private static final int REQ_RECORD_AUDIO = 3001;
+
+    private final WhisperEngine whisperEngine = new WhisperEngine();
+    private android.media.AudioRecord recorder;
+    private volatile Thread recordThread;
+    private volatile boolean recording = false;
+
+    private void onMicClicked() {
+        if (!isAdded() || conv == null) return;
+        if (recording) {           // tap kedua: berhenti -> transkrip
+            stopRecording();
+            return;
+        }
+        if (whisperEngine.isTranscribing()) return;
+        Context c = getActivity();
+        if (c == null) return;
+        if (Build.VERSION.SDK_INT >= 23
+                && c.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                   != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
+            return;
+        }
+        if (!((LibraryActivity) getActivity()).isVoiceModelReady()) {
+            // Model STT belum ada → arahkan download, jangan crash, jangan
+            // diam-diam pakai recognizer sistem.
+            VoiceCatalog.VoiceModel v = VoiceCatalog.whisperTiny();
+            DownloadState st = DownloadState.get(v.id);
+            if (st.status == DownloadState.DOWNLOADING || st.status == DownloadState.PAUSED) {
+                toast("Voice model is still downloading — check the Library tab");
+            } else {
+                toast("Download the Whisper voice model first (Library > Voice models)");
+                if (getActivity() instanceof LibraryActivity) {
+                    ((LibraryActivity) getActivity()).startVoiceDownload(v);
+                }
+            }
+            return;
+        }
+        startRecording();
+    }
+
+    /** Rekam 16 kHz mono PCM via AudioRecord; tap mic lagi = berhenti → transkrip. */
+    private void startRecording() {
+        if (recording) return;
+        int minBuf = android.media.AudioRecord.getMinBufferSize(
+                16000, android.media.AudioFormat.CHANNEL_IN_MONO,
+                android.media.AudioFormat.ENCODING_PCM_16BIT);
+        if (minBuf <= 0) {
+            toast("Audio recording is not available on this device");
+            return;
+        }
+        int bufSize = Math.max(minBuf, 16000 * 2); // ~1 detik minimum
+        try {
+            recorder = new android.media.AudioRecord(
+                    android.media.MediaRecorder.AudioSource.MIC,
+                    16000, android.media.AudioFormat.CHANNEL_IN_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT, bufSize);
+        } catch (Exception e) {
+            toast("Could not start recording");
+            return;
+        }
+        if (recorder.getState() != android.media.AudioRecord.STATE_INITIALIZED) {
+            recorder.release();
+            recorder = null;
+            toast("Could not start recording");
+            return;
+        }
+        recorder.startRecording();
+        recording = true;
+        micBtn.setText("Stop");
+        micBtn.setTextColor(0xFFE5484D);
+        toast("Recording… tap Stop to transcribe");
+
+        recordThread = new Thread(() -> {
+            short[] buf = new short[16000 / 10]; // 100 ms chunk
+            while (!Thread.currentThread().isInterrupted()) {
+                int n;
+                synchronized (recorderLock) {
+                    if (recorder == null || !recording) break;
+                    n = recorder.read(buf, 0, buf.length);
+                }
+                if (n > 0) {
+                    short[] chunk = new short[n];
+                    System.arraycopy(buf, 0, chunk, 0, n);
+                    synchronized (chunks) { chunks.add(chunk); }
+                }
+            }
+        }, "rlnova-rec");
+        recordThread.start();
+    }
+
+    private final Object recorderLock = new Object();
+    private final java.util.ArrayList<short[]> chunks = new java.util.ArrayList<>();
+
+    /** Berhenti rekam + gabung PCM -> transkrip on-device -> isi input (bukan kirim). */
+    private void stopRecording() {
+        if (!recording) return;
+        recording = false;
+        Thread t = recordThread;
+        if (t != null) {
+            try { t.join(1500); } catch (InterruptedException ignored) { }
+            recordThread = null;
+        }
+        android.media.AudioRecord r = recorder;
+        recorder = null;
+        if (r != null) {
+            try { r.stop(); } catch (Exception ignored) { }
+            try { r.release(); } catch (Exception ignored) { }
+        }
+        if (!isAdded() || getActivity() == null) { chunks.clear(); return; }
+
+        // gabungkan chunk yang terkumpul
+        int total = 0;
+        synchronized (chunks) { for (short[] c : chunks) total += c.length; }
+        if (total < 16000 / 2) { // < 0.5 detik: dianggap tidak ada ucapan
+            chunks.clear();
+            resetMicButton();
+            toast("Recording too short");
+            return;
+        }
+        short[] pcm = new short[total];
+        int off = 0;
+        synchronized (chunks) {
+            for (short[] c : chunks) {
+                System.arraycopy(c, 0, pcm, off, c.length);
+                off += c.length;
+            }
+            chunks.clear();
+        }
+        // potong ke maksimum ~60 detik agar RAM aman
+        final short[] pcmFinal;
+        if (off > 16000 * 60) {
+            pcmFinal = new short[16000 * 60];
+            System.arraycopy(pcm, off - pcmFinal.length, pcmFinal, 0, pcmFinal.length);
+        } else {
+            pcmFinal = pcm;
+        }
+        resetMicButton();
+        micBtn.setText("…");
+        toast("Transcribing…");
+        transcribeInBackground(pcmFinal);
+    }
+
+    private void resetMicButton() {
+        if (micBtn != null) {
+            micBtn.setText("Mic");
+            micBtn.setTextColor(0xFFEDF1F7);
+        }
+    }
+
+    /** Load model (bila belum) lalu transkrip di worker; hasil → kolom input. */
+    private void transcribeInBackground(final short[] pcm) {
+        final int nSamples = pcm.length;
+        final android.app.Activity act = getActivity();
+        if (act == null) return;
+        final String modelPath =
+                VoiceCatalog.localFile(getActivity(), VoiceCatalog.WHISPER_TINY_ID).getAbsolutePath();
+        new Thread(() -> {
+            try {
+                whisperEngine.loadLibrary();
+            } catch (Throwable t) {
+                ui.post(() -> { toast("Voice engine failed to load"); resetMicButton(); });
+                return;
+            }
+            if (!whisperEngine.init(modelPath)) {
+                ui.post(() -> { toast("Could not load the voice model"); resetMicButton(); });
+                return;
+            }
+            whisperEngine.transcribeAsync(pcm, nSamples, result -> ui.post(() -> {
+                resetMicButton();
+                if (!isAdded()) return;
+                if (result == null) {
+                    toast("Transcription failed");
+                } else if (result.trim().isEmpty()) {
+                    toast("No speech detected");
+                } else {
+                    // ISI input — JANGAN langsung kirim (user bisa edit dulu).
+                    String current = input.getText() == null ? "" : input.getText().toString();
+                    input.setText(current.isEmpty() ? result : current + " " + result);
+                    input.setSelection(input.getText().length());
+                }
+            }));
+        }, "rlnova-stt").start();
+    }
+
+    private void freeWhisper() {
+        new Thread(() -> whisperEngine.free(), "rlnova-stt-free").start();
     }
 
     private int dp(int v) {
