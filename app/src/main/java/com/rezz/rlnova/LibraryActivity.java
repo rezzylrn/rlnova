@@ -239,6 +239,12 @@ public class LibraryActivity extends Activity implements
 
     @Override public void onConversationListChanged() { /* daftar re-render saat onResume */ }
 
+    // ---------- ChatRoomFragment.Host (v1.1.2 Fitur A) ----------
+
+    @Override public java.util.List<ModelCatalog.Model> allModels() { return catalog.models; }
+
+    @Override public void startDownloadFromChat(ModelCatalog.Model m) { startDownload(m); }
+
     // ---------- lainnya ----------
 
     /** POST_NOTIFICATIONS runtime request on Android 13+ before the first download. */

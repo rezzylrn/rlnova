@@ -90,6 +90,24 @@ public final class ModelCatalog {
         return new File(ctx.getFilesDir(), "models/" + m.file);
     }
 
+    /** Nama tampilan dari modelId — fallback ke raw id kalau tidak ada di katalog. */
+    public static String displayNameFor(java.util.List<Model> models, String modelId) {
+        if (modelId == null) return null;
+        for (Model m : models) {
+            if (m.id.equals(modelId)) return m.name;
+        }
+        return modelId; // fallback: raw id
+    }
+
+    /** Cari model by id (null kalau tidak ada). */
+    public static Model byId(java.util.List<Model> models, String modelId) {
+        if (modelId == null) return null;
+        for (Model m : models) {
+            if (m.id.equals(modelId)) return m;
+        }
+        return null;
+    }
+
     public static String tierLabel(String tier) {
         switch (tier) {
             case "LOW": return "Light";

@@ -1,9 +1,14 @@
 package com.rezz.rlnova;
 
 import android.animation.ObjectAnimator;
+import android.app.Dialog;
 import android.app.Fragment;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -11,8 +16,10 @@ import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -20,16 +27,20 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * ChatRoomFragment (mockup 03, chat room page):
- *   toolbar   : back + model name + green dot "Offline - this device"
- *   scroll    : user bubble right (primary), AI card left + streaming cursor
- *   footer    : mono "N tokens · X.X tok/s" + "Stop" button (while generating)
- *   composer  : rounded 12dp text field + 48dp send button
+ * ChatRoomFragment (mockup 03, chat room page).
  *
  * Threading: loadLibrary/init/generate run on a background thread (single-
  * thread executor); native callbacks -> UI Handler for rendering; stop() is
  * called straight from the UI thread (atomic flag in native, latency <= 1
  * decode iteration).
+ *
+ * v1.1.2:
+ *   - Fitur A: model selector di toolbar (bottom sheet; switch in-place via
+ *     ENGINE_LOCK, rollback ke model lama kalau init gagal, unduh langsung
+ *     dari sheet dengan progres live via DownloadState).
+ *   - Fitur B: atribusi model per pesan (messages.model_id; baris statistik
+ *     kartu AI menampilkan nama model ASAL pesan).
+ *   - Fitur C: long-press bubble user / kartu AI menyalin teks ke clipboard.
  */
 public class ChatRoomFragment extends Fragment {
 
@@ -40,6 +51,10 @@ public class ChatRoomFragment extends Fragment {
         DeviceInfo deviceInfo();
         void onChatClosed();
         void onConversationListChanged();
+        // Fitur A:
+        java.util.List<ModelCatalog.Model> allModels();
+        boolean isModelDownloaded(String modelId);
+        void startDownloadFromChat(ModelCatalog.Model m);
     }
 
     // Satu model termuat per proses — dipakai lintas percakapan.
@@ -76,20 +91,36 @@ public class ChatRoomFragment extends Fragment {
     private TextView footerStats;
     private TextView statusDotLabel;
     private View statusDot;
+    private TextView toolbarTitle;      // Fitur A: tappable model name
     private EditText input;
     private TextView sendBtn;
     private TextView streamingBubble;   // kartu AI yang sedang di-stream
-    private TextView thinkingHeader;    // BUG1: header collapsible "Thinking"
-    private TextView thinkingBody;      // BUG1: isi think (collapse/expand)
-    private View thinkingSection;       // BUG1: container header+body
+    private TextView thinkingHeader;    // header collapsible "Thinking"
+    private TextView thinkingBody;      // isi think (collapse/expand)
+    private View thinkingSection;       // container header+body
     private boolean thinkingExpanded = false;
     private final StringBuilder streamingText = new StringBuilder(); // RAW (dengan tag think)
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private volatile boolean generating = false;
-    private long aiMessageRowId = -1;
+    private volatile boolean switchingModel = false; // Fitur A: satu switch pada satu waktu
     private int nGeneratedLive = 0;
     private long genStartMs = 0;
+
+    // ---- Fitur A: bottom sheet pilihan model
+    private Dialog modelSheet;
+    private LinearLayout sheetList;
+    private final java.util.ArrayList<SheetRow> sheetRows = new java.util.ArrayList<>();
+    private final Runnable sheetPoll = new Runnable() {
+        @Override public void run() {
+            if (modelSheet == null || !modelSheet.isShowing()) return;
+            for (SheetRow r : sheetRows) r.refresh();
+            ui.postDelayed(this, 500);
+        }
+    };
+
+    // Bentuk baris sheet (paralel dengan ModelLibraryFragment)
+    private static final int SHAPE_IDLE = 0, SHAPE_PROGRESS = 1, SHAPE_READY = 2;
 
     public static ChatRoomFragment newInstance(long conversationId) {
         ChatRoomFragment f = new ChatRoomFragment();
@@ -129,14 +160,32 @@ public class ChatRoomFragment extends Fragment {
         toolbar.addView(back, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        TextView title = new TextView(ctx);
-        title.setText(model != null ? model.name : "Rlnova");
-        title.setTextSize(16);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(0xFFEDF1F7);
-        title.setSingleLine(true);
-        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        toolbar.addView(title, new LinearLayout.LayoutParams(
+        // Fitur A: judul model jadi tappable + chevron affordance
+        LinearLayout titleWrap = new LinearLayout(ctx);
+        titleWrap.setOrientation(LinearLayout.HORIZONTAL);
+        titleWrap.setGravity(Gravity.CENTER_VERTICAL);
+        titleWrap.setBackgroundResource(R.drawable.bg_row_ripple);
+        titleWrap.setPadding(dp(4), dp(4), dp(4), dp(4));
+        titleWrap.setOnClickListener(v -> { if (!generating && !switchingModel) showModelSheet(); });
+
+        toolbarTitle = new TextView(ctx);
+        toolbarTitle.setText(model != null ? model.name : "Rlnova");
+        toolbarTitle.setTextSize(16);
+        toolbarTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        toolbarTitle.setTextColor(0xFFEDF1F7);
+        toolbarTitle.setSingleLine(true);
+        toolbarTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        titleWrap.addView(toolbarTitle, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        TextView chev = new TextView(ctx);
+        chev.setText(" ▾");
+        chev.setTextSize(12);
+        chev.setTextColor(0xFF9AA6B8);
+        titleWrap.addView(chev, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        toolbar.addView(titleWrap, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         // status: green dot + "Offline — on this device"
@@ -258,12 +307,17 @@ public class ChatRoomFragment extends Fragment {
         List<ChatDatabase.Message> ms = ChatDatabase.get(getActivity()).getMessages(convId);
         for (ChatDatabase.Message m : ms) {
             if (m.role == ChatDatabase.ROLE_USER) {
-                addBubbleUser(m.content);
+                addBubbleUser(m.content); // Fitur C: long-press copy tersangkut di sini
             } else if (m.role == ChatDatabase.ROLE_ASSISTANT) {
-                addCardAiParsed(m.content); // BUG1: parse think block juga di history
+                addCardAiParsed(m.content); // parse think block juga di history
                 if (m.tokens != null && m.tokPerSec != null) {
                     TextView st = addStatsRow();
-                    st.setText(m.tokens + " tokens · " + fmt1(m.tokPerSec) + " tok/s");
+                    // Fitur B: atribusi model asal pesan (null → format lama)
+                    String name = m.modelId == null ? null
+                            : ModelCatalog.displayNameFor(((Host) getActivity()).allModels(), m.modelId);
+                    st.setText(name != null
+                            ? name + " · " + m.tokens + " tokens · " + fmt1(m.tokPerSec) + " tok/s"
+                            : m.tokens + " tokens · " + fmt1(m.tokPerSec) + " tok/s");
                 }
             }
         }
@@ -273,7 +327,7 @@ public class ChatRoomFragment extends Fragment {
     // ================================================================ kirim
 
     private void onSendClicked() {
-        if (generating) return;
+        if (generating || switchingModel) return;
         String text = input.getText() == null ? "" : input.getText().toString().trim();
         if (text.isEmpty()) return;
         input.setText("");
@@ -298,7 +352,146 @@ public class ChatRoomFragment extends Fragment {
     }
 
     private void close() {
+        dismissSheet();
         ((Host) getActivity()).onChatClosed();
+    }
+
+    // ===================================================== Fitur A: switch
+
+    /** Ganti model percakapan yang sedang dibuka (Fitur A). Jalur UI thread. */
+    private void switchModelTo(ModelCatalog.Model target) {
+        if (switchingModel) return;
+        final ModelCatalog.Model prev = model;
+        switchingModel = true;
+        ChatDatabase.get(getActivity()).setConversationModel(convId, target.id);
+        conv = ((Host) getActivity()).getConversation(convId);
+        model = target;
+        toolbarTitle.setText(target.name);
+
+        EXECUTOR.execute(() -> {
+            boolean ok = false;
+            String err = null;
+            try {
+                LlamaEngine.loadLibrary();
+                synchronized (ENGINE_LOCK) {
+                    // Bebaskan engine lama jika modelnya beda (RAM benar2 kembali)
+                    if (sharedEngine != null && !target.id.equals(sharedEngineModelId)) {
+                        sharedEngine.free();
+                        sharedEngine = null;
+                        sharedEngineModelId = null;
+                    }
+                    if (sharedEngine == null) {
+                        DeviceInfo dev = ((Host) getActivity()).deviceInfo();
+                        PerfPrefs.Perf perf = PerfPrefs.load(getActivity(), dev);
+                        int ctx = Math.min(perf.nCtx > 0 ? perf.nCtx : contextPerTier(dev, target.context),
+                                target.context > 0 ? target.context : Integer.MAX_VALUE);
+                        if (ctx < 256) ctx = 256;
+                        LlamaEngine e = new LlamaEngine();
+                        java.io.File f = new java.io.File(getActivity().getFilesDir(),
+                                "models/" + target.id + ".gguf");
+                        ok = f.exists() && e.init(f.getAbsolutePath(), ctx,
+                                perf.effectiveThreads(dev != null ? dev.cpuCores : 4), perf);
+                        if (ok) {
+                            sharedEngine = e;
+                            sharedEngineModelId = target.id;
+                            sharedEngineConfigEpoch = perfEpoch();
+                            sharedEngineInitCtx = ctx;
+                        }
+                    } else {
+                        ok = true; // engine sudah memuat model target
+                    }
+                }
+            } catch (Throwable t) {
+                err = String.valueOf(t.getMessage());
+            }
+            final boolean okF = ok;
+            final String errF = err;
+            ui.post(() -> {
+                if (!isAdded()) return;
+                switchingModel = false;
+                if (okF) {
+                    toast("Switched to " + target.name);
+                } else {
+                    // Rollback: kembalikan toolbar + modelId DB ke model sebelumnya
+                    // agar percakapan tidak nyangkut di model yang gagal load.
+                    ChatDatabase.get(getActivity()).setConversationModel(convId, prev.id);
+                    conv = ((Host) getActivity()).getConversation(convId);
+                    model = prev;
+                    toolbarTitle.setText(prev.name);
+                    onGenerationFailed("Model failed to load"
+                            + (errF != null ? " (" + errF + ")" : ""));
+                }
+            });
+        });
+    }
+
+    // ============================================== Fitur A: bottom sheet
+
+    private void showModelSheet() {
+        if (!isAdded() || modelSheet != null) return;
+        Context c = getActivity();
+        modelSheet = new Dialog(c);
+        modelSheet.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout panel = new LinearLayout(c);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundColor(0xFF131822);
+
+        TextView head = new TextView(c);
+        head.setText("Switch model");
+        head.setTextSize(16);
+        head.setTypeface(Typeface.DEFAULT_BOLD);
+        head.setTextColor(0xFFEDF1F7);
+        int hp = dp(16);
+        head.setPadding(hp, dp(16), hp, dp(8));
+        panel.addView(head);
+
+        ScrollView scroll = new ScrollView(c);
+        sheetList = new LinearLayout(c);
+        sheetList.setOrientation(LinearLayout.VERTICAL);
+        sheetList.setPadding(dp(8), 0, dp(8), dp(16));
+        scroll.addView(sheetList);
+        panel.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        modelSheet.setContentView(panel, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(420)));
+        Window w = modelSheet.getWindow();
+        if (w != null) {
+            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, dp(420));
+            w.setGravity(Gravity.BOTTOM);
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x00000000));
+        }
+
+        sheetRows.clear();
+        for (ModelCatalog.Model m : ((Host) getActivity()).allModels()) {
+            SheetRow r = new SheetRow(m);
+            sheetRows.add(r);
+            r.attach(sheetList);
+        }
+        modelSheet.setOnDismissListener(d -> {
+            modelSheet = null;
+            sheetRows.clear();
+            ui.removeCallbacks(sheetPoll);
+        });
+        modelSheet.show();
+        ui.post(sheetPoll);
+    }
+
+    private void dismissSheet() {
+        if (modelSheet != null) {
+            try { modelSheet.dismiss(); } catch (Exception ignored) { }
+            modelSheet = null;
+            ui.removeCallbacks(sheetPoll);
+        }
+    }
+
+    private int tierColor(String tier) {
+        switch (tier) {
+            case "LOW": return 0xFF34C77B;
+            case "MID": return 0xFF5B8DEF;
+            default: return 0xFFA78BFA;
+        }
     }
 
     // ============================================================ generation
@@ -413,6 +606,7 @@ public class ChatRoomFragment extends Fragment {
     private void onGenerationFailed(String msg) {
         if (!isAdded()) return; // fragment detached mid-generation
         generating = false;
+        switchingModel = false;
         footer.setVisibility(View.GONE);
         sendBtn.setEnabled(true);
         sendBtn.setAlpha(1f);
@@ -435,8 +629,6 @@ public class ChatRoomFragment extends Fragment {
 
     // Called on the UI thread per token; guards against a detached fragment
     // (back press mid-generation must not NPE).
-    // Called on the UI thread per token; guards against a detached fragment
-    // (back press mid-generation must not NPE).
     private void appendToken(String piece) {
         if (!isAdded() || messagesView == null) return;
         streamingText.append(piece);
@@ -454,7 +646,7 @@ public class ChatRoomFragment extends Fragment {
     }
 
     /**
-     * BUG1: render ulang seluruh akumulasi RAW ke (think collapsible + answer).
+     * Render ulang seluruh akumulasi RAW ke (think collapsible + answer).
      * Re-split seluruh string tiap update — tag yang terbelah antar token
      * ("<thi" + "nk>") tetap terdeteksi.
      */
@@ -526,18 +718,7 @@ public class ChatRoomFragment extends Fragment {
         slp.topMargin = dp(8);
         messagesView.addView(section, slp);
         if (!r.answer.trim().isEmpty()) {
-            TextView card = new TextView(getActivity());
-            card.setText(r.answer);
-            card.setTextSize(14);
-            card.setTextColor(0xFFEDF1F7);
-            card.setBackgroundResource(R.drawable.bg_card_ai);
-            card.setPadding(dp(14), dp(10), dp(14), dp(10));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.gravity = Gravity.START;
-            lp.rightMargin = dp(48);
-            lp.topMargin = dp(4);
-            messagesView.addView(card, lp);
+            addCardAi(r.answer);
         } else {
             // BUG2 fallback: generation berakhir dengan think-only → tampilkan catatan + Retry.
             TextView note = new TextView(getActivity());
@@ -631,12 +812,17 @@ public class ChatRoomFragment extends Fragment {
         String content = streamingText.toString(); // RAW, dengan tag think
         double secs = msTotal / 1000.0;
         double tps = secs > 0 ? nGen / secs : 0.0;
+        // Fitur B: simpan model yang aktif SAAT pesan dibuat (atribusi asal).
         ChatDatabase.get(getActivity()).insertMessage(convId, ChatDatabase.ROLE_ASSISTANT,
-                content, nGen, tps);
+                content, nGen, tps, model != null ? model.id : null);
         removeStreamingCard();
-        addCardAiParsed(content); // BUG1: render think collapsible + answer
+        addCardAiParsed(content); // render think collapsible + answer
         TextView stats = addStatsRow();
-        stats.setText(nGen + " tokens · " + fmt1(tps) + " tok/s");
+        // Fitur B: "<Nama model> · N tokens · X tok/s"
+        String mName = model != null ? model.name : null;
+        stats.setText(mName != null
+                ? mName + " · " + nGen + " tokens · " + fmt1(tps) + " tok/s"
+                : nGen + " tokens · " + fmt1(tps) + " tok/s");
         scrollToBottom();
         ((Host) getActivity()).onConversationListChanged();
     }
@@ -685,7 +871,7 @@ public class ChatRoomFragment extends Fragment {
             messagesView.removeView(streamingBubble);
             streamingBubble = null;
         }
-        // BUG1: lepas juga section think streaming (final dirender ulang oleh addCardAiParsed)
+        // lepas juga section think streaming (final dirender ulang oleh addCardAiParsed)
         if (thinkingSection != null) {
             messagesView.removeView(thinkingSection);
             thinkingSection = null;
@@ -698,6 +884,16 @@ public class ChatRoomFragment extends Fragment {
 
     // ------------------------------------------------------------------- UI
 
+    /** Fitur C: salin teks pesan ke clipboard + Toast "Copied". */
+    private void copyToClipboard(String text) {
+        if (text == null || text.isEmpty() || !isAdded()) return;
+        ClipboardManager cm = (ClipboardManager) getActivity()
+                .getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) return;
+        cm.setPrimaryClip(ClipData.newPlainText("message", text));
+        toast("Copied");
+    }
+
     private void addBubbleUser(String text) {
         TextView b = new TextView(getActivity());
         b.setText(text);
@@ -705,6 +901,11 @@ public class ChatRoomFragment extends Fragment {
         b.setTextColor(0xFFFFFFFF);
         b.setBackgroundResource(R.drawable.bg_bubble_user);
         b.setPadding(dp(14), dp(10), dp(14), dp(10));
+        b.setLongClickable(true);
+        b.setOnLongClickListener(v -> {
+            copyToClipboard(text);
+            return true;
+        });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.END;
@@ -720,6 +921,12 @@ public class ChatRoomFragment extends Fragment {
         card.setTextColor(0xFFEDF1F7);
         card.setBackgroundResource(R.drawable.bg_card_ai);
         card.setPadding(dp(14), dp(10), dp(14), dp(10));
+        // Fitur C: hanya teks jawaban (bukan think block, bukan statistik)
+        card.setLongClickable(true);
+        card.setOnLongClickListener(v -> {
+            copyToClipboard(content);
+            return true;
+        });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.START;
@@ -763,5 +970,168 @@ public class ChatRoomFragment extends Fragment {
 
     private int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Satu baris model di bottom sheet (Fitur A). Konten dibangun ulang hanya
+     * saat bentuk (READY/PROGRESS/IDLE) berubah — progress di-update in-place.
+     * READY: warna penuh, tap = switch. PROGRESS/IDLE: alpha 0.4, caption
+     * "Not downloaded" + tombol Download (ACTION_START seperti di Library).
+     * Setelah DONE, poll membuat baris otomatis SHAPE_READY tanpa tutup sheet.
+     */
+    private final class SheetRow {
+        final ModelCatalog.Model m;
+        LinearLayout row;
+        int shape = -1;
+        ProgressBar bar;
+        TextView info;
+
+        SheetRow(ModelCatalog.Model m) { this.m = m; }
+
+        int currentShape() {
+            if (!isAdded()) return SHAPE_IDLE;
+            boolean downloaded = ((Host) getActivity()).isModelDownloaded(m.id);
+            DownloadState st = DownloadState.get(m.id);
+            if (downloaded || st.status == DownloadState.DONE) return SHAPE_READY;
+            if (st.status == DownloadState.DOWNLOADING || st.status == DownloadState.PAUSED)
+                return SHAPE_PROGRESS;
+            return SHAPE_IDLE;
+        }
+
+        void attach(LinearLayout parent) {
+            row = new LinearLayout(getActivity());
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setBackgroundResource(R.drawable.bg_row_ripple);
+            int p = dp(14);
+            row.setPadding(p, p, p, p);
+            parent.addView(row, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            render();
+        }
+
+        void refresh() {
+            int s = currentShape();
+            if (s != shape) {
+                render();
+            } else if (s == SHAPE_PROGRESS) {
+                DownloadState st = DownloadState.get(m.id);
+                if (bar != null) bar.setProgress(DownloadState.progressPercent(st));
+                if (info != null) {
+                    info.setText(DownloadState.formatBytes(st.downloaded) + " of "
+                            + DownloadState.formatBytes(st.total)
+                            + (st.speed != null && st.status == DownloadState.DOWNLOADING
+                               ? " · " + st.speed : ""));
+                }
+            }
+        }
+
+        void render() {
+            if (!isAdded() || row == null) return;
+            shape = currentShape();
+            boolean ready = shape == SHAPE_READY;
+            row.removeAllViews();
+            row.setAlpha(ready ? 1f : 0.4f);
+            row.setOnClickListener(null);
+            row.setClickable(false);
+            bar = null;
+            info = null;
+
+            // Head: nama + tier chip
+            LinearLayout head = new LinearLayout(getActivity());
+            head.setOrientation(LinearLayout.HORIZONTAL);
+            head.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView name = new TextView(getActivity());
+            name.setText(m.name);
+            name.setTextSize(15);
+            name.setTypeface(Typeface.DEFAULT_BOLD);
+            name.setTextColor(ready ? 0xFFEDF1F7 : 0xFF5B6678);
+            name.setLayoutParams(new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            head.addView(name);
+
+            TextView tier = new TextView(getActivity());
+            tier.setText(ModelCatalog.tierLabel(m.tier));
+            tier.setTextSize(11);
+            tier.setTypeface(Typeface.DEFAULT_BOLD);
+            tier.setTextColor(tierColor(m.tier));
+            tier.setBackgroundResource(R.drawable.bg_chip_pill);
+            tier.setPadding(dp(8), dp(2), dp(8), dp(2));
+            head.addView(tier, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            row.addView(head);
+
+            if (shape == SHAPE_READY) {
+                TextView cap = new TextView(getActivity());
+                cap.setText(DeviceInfo.formatBytes(m.sizeBytes) + " · On this device");
+                cap.setTextSize(12);
+                cap.setTextColor(0xFF7C8AA5);
+                LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                clp.topMargin = dp(2);
+                row.addView(cap, clp);
+                row.setClickable(true);
+                row.setOnClickListener(v -> {
+                    if (generating || switchingModel) return;
+                    if (model != null && model.id.equals(m.id)) {
+                        dismissSheet();
+                        return;
+                    }
+                    dismissSheet();
+                    switchModelTo(m);
+                });
+            } else {
+                if (shape == SHAPE_PROGRESS) {
+                    DownloadState st = DownloadState.get(m.id);
+                    bar = new ProgressBar(getActivity(), null,
+                            android.R.attr.progressBarStyleHorizontal);
+                    bar.setProgress(DownloadState.progressPercent(st));
+                    bar.setProgressDrawable(getResources().getDrawable(R.drawable.progress_download));
+                    LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, dp(4));
+                    blp.topMargin = dp(8);
+                    row.addView(bar, blp);
+
+                    info = new TextView(getActivity());
+                    info.setText(DownloadState.formatBytes(st.downloaded) + " of "
+                            + DownloadState.formatBytes(st.total)
+                            + (st.speed != null && st.status == DownloadState.DOWNLOADING
+                               ? " · " + st.speed : ""));
+                    info.setTextSize(12);
+                    info.setTypeface(Typeface.MONOSPACE);
+                    info.setTextColor(0xFF7C8AA5);
+                    LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    ilp.topMargin = dp(4);
+                    row.addView(info, ilp);
+                } else {
+                    TextView cap = new TextView(getActivity());
+                    cap.setText("Not downloaded");
+                    cap.setTextSize(12);
+                    cap.setTextColor(0xFF5B6678);
+                    row.addView(cap, new LinearLayout.LayoutParams(0,
+                            LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                }
+
+                if (shape == SHAPE_IDLE) {
+                    TextView dl = new TextView(getActivity());
+                    dl.setText("Download");
+                    dl.setTextColor(0xFFFFFFFF);
+                    dl.setTextSize(13);
+                    dl.setTypeface(Typeface.DEFAULT_BOLD);
+                    dl.setBackgroundResource(R.drawable.bg_button_primary);
+                    dl.setPadding(dp(14), dp(8), dp(14), dp(8));
+                    LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    dlp.topMargin = dp(8);
+                    row.addView(dl, dlp);
+                    row.setClickable(true);
+                    row.setOnClickListener(v -> {
+                        if (generating || switchingModel) return;
+                        ((Host) getActivity()).startDownloadFromChat(m);
+                    });
+                }
+            }
+        }
     }
 }
