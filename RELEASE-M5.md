@@ -63,3 +63,11 @@ Perubahan v1.1.0:
 - P4: AI thinking dots (caret blink) saat model loading / sebelum token pertama.
 - P6: ETA text di notifikasi & Downloads row ("~3 min left"), progress rounded.
 - ChatRoomFragment: 2 referensi rusak (sisa run sebelumnya) diperbaiki.
+
+## Rlnova v1.1.1 — 2026-10-24 (REVISED brief, 4 P0 bugs)
+BUILD FINAL: Rlnova.apk 14.0 MB (14,039,614 B), versionCode 7 / versionName 1.1.1, com.rezz.rlnova, signed debug keystore.
+- BUG1 (raw think di chat): ThinkSplit.java baru — parse akumulasi RAW penuh (tag terbelah aman), header "Thinking…" collapsible (default collapsed), isi DB tetap RAW, history ikut parse. ChatRoomFragment dirender ulang via renderStreamingState()/addCardAiParsed().
+- BUG2 (turn ke-2 stuck think): bridge.cpp — deteksi EOS saat think belum ditutup → inject literal close-tag ke konteks + lanjut sampling (cap 2x), log stopReason+nGen tiap selesai (tag rlnova-bridge), fallback UI "No answer generated" + Retry (hapus assistant row lama, user bubble tidak diduplikasi).
+- BUG3 (Model Library kedip): card di-cache per modelId; poll 500ms hanya update in-place (progress bar/info/shape change satu card); rebuildList hanya saat set model berubah (filter/delete/DONE→IDLE/delete model); animasi enter hanya saat card pertama dibuat. deleteModel() sekarang bumpVersion() (tidak re-create fragment).
+- BUG4 (icon bar putih): logo di-crop ke rect navy + flood-fill putih border → navy #0C0F14 full-bleed; semua density (mdpi-xxxhdpi) legacy + adaptive foreground (artwork di 66dp safe zone) di-regenerate. Verifikasi piksel: 0 px non-navy di border semua density.
+CATATAN: vision_analyze bermasalah di sesi ini (bug "Invalid port") — verifikasi visual ikon dilakukan via analisis piksel programatik.

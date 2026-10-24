@@ -17,6 +17,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.Map;
 
 /**
  * ModelLibraryFragment (mockup 02): header "Model Library" + filter chips
@@ -24,8 +25,11 @@ import java.util.ArrayList;
  * download status). RecyclerView is flattened into a LinearLayout inside a
  * ScrollView because this APK has no external dependencies.
  *
- * Models whose minRamGb exceeds device RAM are locked: the action row shows a
- * "Locked" chip with a reason (no action). Download state is polled from DownloadState every 500ms.
+ * BUG3 (v1.1.1): card views di-cache per modelId. Poll 500ms TIDAK membangun
+ * ulang list — hanya UPDATE IN PLACE (progress bar, info text, tombol) untuk
+ * card yang state-nya berubah. rebuildList() penuh HANYA saat set model
+ * berubah (ganti filter, download selesai, delete, resume pertama).
+ * Animasi enter (fade+rise) hanya jalan saat card view pertama dibuat.
  */
 public class ModelLibraryFragment extends android.app.Fragment {
 
@@ -56,10 +60,24 @@ public class ModelLibraryFragment extends android.app.Fragment {
     private int filter = FILTER_ALL;
     private long lastVersion = -1;
     private boolean resumed = false;
+
+    /** Kartu per modelId — untuk update in-place tanpa rebuild. */
+    private final Map<String, View> cardViews = new java.util.HashMap<>();
+    /** Progress bar per modelId (null kalau card tidak sedang menampilkan progress). */
+    private final Map<String, ProgressBar> cardProgressBars = new java.util.HashMap<>();
+    /** Info text per modelId (downloaded/total · speed). */
+    private final Map<String, TextView> cardInfoTexts = new java.util.HashMap<>();
+    /** State aksi terakhir yang dirender per card (untuk deteksi perubahan bentuk). */
+    private final Map<String, Integer> cardShapes = new java.util.HashMap<>();
+
+    private static final int SHAPE_IDLE = 0;      // Download / Locked
+    private static final int SHAPE_PROGRESS = 1;  // bar + info + pause/cancel
+    private static final int SHAPE_DONE = 2;      // On this device + Delete
+
     private final Runnable poll = new Runnable() {
         @Override public void run() {
             if (!resumed) return;
-            if (DownloadState.uiVersion() != lastVersion) rebuild();
+            if (DownloadState.uiVersion() != lastVersion) onDownloadStateVersionBump();
             handler.postDelayed(this, 500);
         }
     };
@@ -145,7 +163,7 @@ public class ModelLibraryFragment extends android.app.Fragment {
     private void setFilter(int f) {
         filter = f;
         refreshChipStyles();
-        rebuildList();
+        rebuildList(); // set model berubah → full rebuild sah
     }
 
     private void refreshChipStyles() {
@@ -162,17 +180,12 @@ public class ModelLibraryFragment extends android.app.Fragment {
         chip.setAlpha(active ? 1f : 0.55f);
     }
 
-    /** Bangun ulang daftar + sinkron chip aktif; dipanggil saat polling. */
-    private void rebuild() {
-        refreshChipStyles();
-        rebuildList();
-    }
-
     @Override
     public void onResume() {
         super.onResume();
         resumed = true;
-        rebuild();
+        lastVersion = -1;      // paksa sinkron pertama
+        rebuildList();
         handler.post(poll);
     }
 
@@ -183,8 +196,64 @@ public class ModelLibraryFragment extends android.app.Fragment {
         super.onPause();
     }
 
+    /**
+     * BUG3: uiVersion naik (download progress ~2x/dtk) TIDAK membangun ulang
+     * list. Cukup update in-place card yang terdampak.
+     */
+    private void onDownloadStateVersionBump() {
+        lastVersion = DownloadState.uiVersion();
+        for (ModelCatalog.Model m : new ArrayList<>(catalog.models)) {
+            View card = cardViews.get(m.id);
+            if (card == null) continue; // card tidak tampil (filter) — abaikan
+            DownloadState st = DownloadState.get(m.id);
+            int shape = shapeFor(m, st);
+            Integer prev = cardShapes.get(m.id);
+            if (prev == null || prev != shape) {
+                // Bentuk aksi berubah (mis. DOWNLOADING→DONE, IDLE→DOWNLOADING):
+                // rebuild SATU card ini saja, tanpa animasi.
+                replaceCardInPlace(m, false);
+            } else if (shape == SHAPE_PROGRESS) {
+                // bentuk sama, update angka/bar saja — in-place, tanpa animasi
+                ProgressBar bar = cardProgressBars.get(m.id);
+                TextView info = cardInfoTexts.get(m.id);
+                if (bar != null) bar.setProgress(DownloadState.progressPercent(st));
+                if (info != null) {
+                    info.setText(DownloadState.formatBytes(st.downloaded) + " of "
+                            + DownloadState.formatBytes(st.total)
+                            + (st.speed != null && st.status == DownloadState.DOWNLOADING
+                               ? " · " + st.speed : ""));
+                }
+            }
+        }
+    }
+
+    private int shapeFor(ModelCatalog.Model m, DownloadState st) {
+        boolean downloaded = ((Host) getActivity()).isModelDownloaded(m.id);
+        if (downloaded || st.status == DownloadState.DONE) return SHAPE_DONE;
+        if (st.status == DownloadState.DOWNLOADING || st.status == DownloadState.PAUSED)
+            return SHAPE_PROGRESS;
+        return SHAPE_IDLE;
+    }
+
+    /** Ganti view satu card dengan yang baru (tanpa animasi enter). */
+    private void replaceCardInPlace(ModelCatalog.Model m, boolean animate) {
+        int idx = list.indexOfChild(cardViews.get(m.id));
+        View fresh = buildModelCard(m, false);
+        if (idx >= 0) {
+            list.removeViewAt(idx);
+            list.addView(fresh, idx);
+        } else {
+            list.addView(fresh);
+        }
+        registerCard(m, fresh, animate);
+    }
+
     private void rebuildList() {
         list.removeAllViews();
+        cardViews.clear();
+        cardShapes.clear();
+        cardProgressBars.clear();
+        cardInfoTexts.clear();
         for (ModelCatalog.Model m : new ArrayList<>(catalog.models)) {
             boolean tierMatch =
                     (filter == FILTER_ALL)
@@ -193,7 +262,9 @@ public class ModelLibraryFragment extends android.app.Fragment {
                             || (filter == FILTER_HIGH && "HIGH".equals(m.tier));
             if (!tierMatch) continue;
             View card = buildModelCard(m);
-            // P3 enter: small fade+rise on first build (one-shot, not a bounce)
+            cardViews.put(m.id, card);
+            cardShapes.put(m.id, shapeFor(m, DownloadState.get(m.id)));
+            // P3 enter: fade+rise HANYA saat card view pertama kali dibuat
             card.setAlpha(0f);
             card.setTranslationY(dp(12));
             card.animate().alpha(1f).translationY(0f).setDuration(220)
@@ -204,6 +275,10 @@ public class ModelLibraryFragment extends android.app.Fragment {
     }
 
     private View buildModelCard(final ModelCatalog.Model m) {
+        return buildModelCard(m, true);
+    }
+
+    private View buildModelCard(final ModelCatalog.Model m, boolean animate) {
         Context ctx = getActivity();
         LinearLayout card = new LinearLayout(ctx);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -268,7 +343,61 @@ public class ModelLibraryFragment extends android.app.Fragment {
         alp.topMargin = dp(12);
         card.addView(actionRow, alp);
         fillActionRow(actionRow, m);
+        registerCard(m, card, animate);
         return card;
+    }
+
+    /** Simpan ref card + bar + info untuk update in-place. */
+    private void registerCard(ModelCatalog.Model m, View card, boolean animate) {
+        cardViews.put(m.id, card);
+        cardShapes.put(m.id, shapeFor(m, DownloadState.get(m.id)));
+        // progress bar / info text diambil via traversal kecil pada action row
+        cardProgressBars.remove(m.id);
+        cardInfoTexts.remove(m.id);
+        LinearLayout row = findActionRow(card);
+        if (row != null) {
+            ProgressBar bar = findProgressBar(row);
+            TextView info = findInfoText(row);
+            if (bar != null) cardProgressBars.put(m.id, bar);
+            if (info != null) cardInfoTexts.put(m.id, info);
+        }
+    }
+
+    private LinearLayout findActionRow(View card) {
+        if (card instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) card;
+            for (int i = vg.getChildCount() - 1; i >= 0; i--) {
+                View c = vg.getChildAt(i);
+                if (c instanceof LinearLayout) return (LinearLayout) c;
+            }
+        }
+        return null;
+    }
+
+    private ProgressBar findProgressBar(ViewGroup row) {
+        for (int i = 0; i < row.getChildCount(); i++) {
+            View c = row.getChildAt(i);
+            if (c instanceof ProgressBar) return (ProgressBar) c;
+            if (c instanceof ViewGroup) {
+                ProgressBar b = findProgressBar((ViewGroup) c);
+                if (b != null) return b;
+            }
+        }
+        return null;
+    }
+
+    private TextView findInfoText(ViewGroup row) {
+        for (int i = 0; i < row.getChildCount(); i++) {
+            View c = row.getChildAt(i);
+            if (c instanceof TextView) {
+                String s = ((TextView) c).getText().toString();
+                if (s.contains(" of ")) return (TextView) c;
+            } else if (c instanceof ViewGroup) {
+                TextView t = findInfoText((ViewGroup) c);
+                if (t != null) return t;
+            }
+        }
+        return null;
     }
 
     /** Bangun ulang area aksi card sesuai state unduh saat ini. */

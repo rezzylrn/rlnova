@@ -2,6 +2,7 @@ package com.rezz.rlnova;
 
 import android.animation.ObjectAnimator;
 import android.app.Fragment;
+import android.content.Context;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
@@ -78,7 +79,11 @@ public class ChatRoomFragment extends Fragment {
     private EditText input;
     private TextView sendBtn;
     private TextView streamingBubble;   // kartu AI yang sedang di-stream
-    private final StringBuilder streamingText = new StringBuilder();
+    private TextView thinkingHeader;    // BUG1: header collapsible "Thinking"
+    private TextView thinkingBody;      // BUG1: isi think (collapse/expand)
+    private View thinkingSection;       // BUG1: container header+body
+    private boolean thinkingExpanded = false;
+    private final StringBuilder streamingText = new StringBuilder(); // RAW (dengan tag think)
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private volatile boolean generating = false;
@@ -255,7 +260,7 @@ public class ChatRoomFragment extends Fragment {
             if (m.role == ChatDatabase.ROLE_USER) {
                 addBubbleUser(m.content);
             } else if (m.role == ChatDatabase.ROLE_ASSISTANT) {
-                addCardAi(m.content);
+                addCardAiParsed(m.content); // BUG1: parse think block juga di history
                 if (m.tokens != null && m.tokPerSec != null) {
                     TextView st = addStatsRow();
                     st.setText(m.tokens + " tokens · " + fmt1(m.tokPerSec) + " tok/s");
@@ -299,6 +304,11 @@ public class ChatRoomFragment extends Fragment {
     // ============================================================ generation
 
     private void startGeneration(final String userText) {
+        startGeneration(userText, false);
+    }
+
+    /** Retry (BUG2 fallback): generate ulang TANPA menambah bubble/row user baru. */
+    private void startGeneration(final String userText, final boolean retry) {
         final Host host = (Host) getActivity();
         final ModelCatalog.Model m = model;
         if (m == null) {
@@ -309,6 +319,7 @@ public class ChatRoomFragment extends Fragment {
         genStartMs = System.currentTimeMillis();
         nGeneratedLive = 0;
         streamingText.setLength(0);
+        thinkingExpanded = false;
         footer.setVisibility(View.VISIBLE);
         footerStats.setText("0 tokens · 0.0 tok/s");
         sendBtn.setEnabled(false);
@@ -359,6 +370,16 @@ public class ChatRoomFragment extends Fragment {
             if (!history.isEmpty()
                     && history.get(history.size() - 1).role == ChatDatabase.ROLE_USER) {
                 history = history.subList(0, history.size() - 1);
+            }
+            if (retry) {
+                // Retry: buang juga assistant row lama yang think-only supaya
+                // tidak menumpuk pesan kosong di riwayat & prompt.
+                while (!history.isEmpty()
+                        && history.get(history.size() - 1).role == ChatDatabase.ROLE_ASSISTANT) {
+                    ChatDatabase.get(appCtx).deleteMessage(
+                            history.get(history.size() - 1).id);
+                    history = history.subList(0, history.size() - 1);
+                }
             }
             final String prompt = ChatTemplates.build(m.chatTemplate,
                     conv != null ? conv.systemPrompt : null, history, userText);
@@ -414,6 +435,8 @@ public class ChatRoomFragment extends Fragment {
 
     // Called on the UI thread per token; guards against a detached fragment
     // (back press mid-generation must not NPE).
+    // Called on the UI thread per token; guards against a detached fragment
+    // (back press mid-generation must not NPE).
     private void appendToken(String piece) {
         if (!isAdded() || messagesView == null) return;
         streamingText.append(piece);
@@ -423,11 +446,176 @@ public class ChatRoomFragment extends Fragment {
         } else {
             stopThinkingDots(); // first token arrived: stop caret blink
         }
-        streamingBubble.setText(streamingText + "▍");
+        renderStreamingState();
         scrollToBottom();
         double secs = (System.currentTimeMillis() - genStartMs) / 1000.0;
         double tps = secs > 0.05 ? nGeneratedLive / secs : 0.0;
         footerStats.setText(nGeneratedLive + " tokens · " + fmt1(tps) + " tok/s");
+    }
+
+    /**
+     * BUG1: render ulang seluruh akumulasi RAW ke (think collapsible + answer).
+     * Re-split seluruh string tiap update — tag yang terbelah antar token
+     * ("<thi" + "nk>") tetap terdeteksi.
+     */
+    private void renderStreamingState() {
+        if (!isAdded() || streamingBubble == null) return;
+        ThinkSplit.Result r = ThinkSplit.parse(streamingText.toString());
+        ensureThinkSection(r.hasThink);
+        if (r.hasThink) {
+            boolean live = generating;
+            if (r.inThink) {
+                thinkingHeader.setText(live ? "Thinking…" : "Thinking");
+            } else {
+                thinkingHeader.setText("Thinking");
+            }
+            thinkingBody.setText(r.thinking);
+            thinkingSection.setVisibility(View.VISIBLE);
+            thinkingBody.setVisibility(thinkingExpanded ? View.VISIBLE : View.GONE);
+            // Isi kartu jawaban: jawaban parsial, atau caret saat masih think.
+            if (r.inThink) {
+                streamingBubble.setText(generating ? "▍" : "");
+            } else {
+                streamingBubble.setText(r.answer + "▍");
+            }
+        } else {
+            if (thinkingSection != null) thinkingSection.setVisibility(View.GONE);
+            streamingBubble.setText(r.answer + "▍");
+        }
+    }
+
+    /** Pastikan section think streaming ada (dibuat sekali per generasi). */
+    private void ensureThinkSection(boolean needed) {
+        if (!needed) {
+            // biarkan section lama (kalau ada) — visibility diatur pemanggil
+            return;
+        }
+        if (thinkingSection == null || thinkingHeader == null || thinkingBody == null) {
+            View v = buildThinkSection("", true);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.gravity = Gravity.START;
+            lp.rightMargin = dp(48);
+            lp.topMargin = dp(8);
+            // sisipkan tepat sebelum kartu streaming
+            int idx = messagesView.indexOfChild(streamingBubble);
+            if (idx < 0) idx = messagesView.getChildCount();
+            messagesView.addView(v, idx, lp);
+            thinkingSection = v;
+            // ambil referensi header/body dari section yang baru dibuat
+            thinkingHeader = (TextView) ((ViewGroup) v).getChildAt(0);
+            thinkingBody = (TextView) ((ViewGroup) v).getChildAt(1);
+            // state expand: ikut flag global (default collapsed)
+            thinkingBody.setVisibility(thinkingExpanded ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    /** Kartu AI final (dipakai finishGeneration & loadHistory): parse think → header collapsible + answer. */
+    private void addCardAiParsed(String rawContent) {
+        if (!isAdded() || messagesView == null) return;
+        ThinkSplit.Result r = ThinkSplit.parse(rawText(rawContent));
+        if (!r.hasThink) {
+            addCardAi(r.answer);
+            return;
+        }
+        final View section = buildThinkSection(r.thinking, false);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        slp.gravity = Gravity.START;
+        slp.rightMargin = dp(48);
+        slp.topMargin = dp(8);
+        messagesView.addView(section, slp);
+        if (!r.answer.trim().isEmpty()) {
+            TextView card = new TextView(getActivity());
+            card.setText(r.answer);
+            card.setTextSize(14);
+            card.setTextColor(0xFFEDF1F7);
+            card.setBackgroundResource(R.drawable.bg_card_ai);
+            card.setPadding(dp(14), dp(10), dp(14), dp(10));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.gravity = Gravity.START;
+            lp.rightMargin = dp(48);
+            lp.topMargin = dp(4);
+            messagesView.addView(card, lp);
+        } else {
+            // BUG2 fallback: generation berakhir dengan think-only → tampilkan catatan + Retry.
+            TextView note = new TextView(getActivity());
+            note.setText("No answer generated.");
+            note.setTextSize(13);
+            note.setTextColor(0xFF9AA6B8);
+            note.setPadding(dp(14), dp(8), dp(14), dp(10));
+            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            nlp.gravity = Gravity.START;
+            nlp.rightMargin = dp(48);
+            nlp.topMargin = dp(4);
+            messagesView.addView(note, nlp);
+
+            TextView retry = new TextView(getActivity());
+            retry.setText("Retry");
+            retry.setTextSize(14);
+            retry.setTypeface(Typeface.DEFAULT_BOLD);
+            retry.setTextColor(0xFF5B8DEF);
+            retry.setPadding(dp(14), dp(6), dp(14), dp(10));
+            final String raw = rawText(rawContent);
+            retry.setOnClickListener(v -> {
+                if (generating) return;
+                // hapus tampilan section lama (note + retry ikut hilang bareng parentnya)
+                messagesView.removeView(section);
+                startGeneration(lastUserTextFor(raw), true);
+            });
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            rlp.gravity = Gravity.START;
+            rlp.topMargin = dp(2);
+            rlp.bottomMargin = dp(8);
+            messagesView.addView(retry, rlp);
+        }
+    }
+
+    /** Ambil pesan user terakhir dari DB (untuk Retry — bubble user tidak diduplikasi). */
+    private String lastUserTextFor(String ignore) {
+        List<ChatDatabase.Message> ms = ChatDatabase.get(getActivity()).getMessages(convId);
+        for (int i = ms.size() - 1; i >= 0; i--) {
+            if (ms.get(i).role == ChatDatabase.ROLE_USER) return ms.get(i).content;
+        }
+        return "";
+    }
+
+    private String rawText(String s) { return s == null ? "" : s; }
+
+    /** Bangun section think (header collapsible + body) — dipakai streaming & final. */
+    private View buildThinkSection(String thinking, boolean live) {
+        Context c = getActivity();
+        LinearLayout section = new LinearLayout(c);
+        section.setOrientation(LinearLayout.VERTICAL);
+
+        final TextView header = new TextView(c);
+        header.setText(live ? "Thinking…" : "Thinking");
+        header.setTextSize(13);
+        header.setTypeface(Typeface.DEFAULT_BOLD);
+        header.setTextColor(0xFF8A94A8); // secondary
+        header.setPadding(dp(4), dp(4), dp(4), dp(4));
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        section.addView(header, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        final TextView body = new TextView(c);
+        body.setText(thinking);
+        body.setTextSize(13);
+        body.setTextColor(0xFF7C8AA5);
+        body.setBackgroundResource(R.drawable.bg_card_ai);
+        body.setPadding(dp(12), dp(8), dp(12), dp(8));
+        body.setVisibility(View.GONE); // collapsed by default
+        section.addView(body, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        header.setOnClickListener(v -> {
+            thinkingExpanded = !thinkingExpanded;
+            body.setVisibility(thinkingExpanded ? View.VISIBLE : View.GONE);
+        });
+        return section;
     }
 
     private void finishGeneration(int nGen, int stopReason, double msTotal) {
@@ -440,13 +628,13 @@ public class ChatRoomFragment extends Fragment {
             onGenerationFailed("Generation failed");
             return;
         }
-        String content = streamingText.toString();
+        String content = streamingText.toString(); // RAW, dengan tag think
         double secs = msTotal / 1000.0;
         double tps = secs > 0 ? nGen / secs : 0.0;
         ChatDatabase.get(getActivity()).insertMessage(convId, ChatDatabase.ROLE_ASSISTANT,
                 content, nGen, tps);
         removeStreamingCard();
-        addCardAi(content);
+        addCardAiParsed(content); // BUG1: render think collapsible + answer
         TextView stats = addStatsRow();
         stats.setText(nGen + " tokens · " + fmt1(tps) + " tok/s");
         scrollToBottom();
@@ -497,6 +685,14 @@ public class ChatRoomFragment extends Fragment {
             messagesView.removeView(streamingBubble);
             streamingBubble = null;
         }
+        // BUG1: lepas juga section think streaming (final dirender ulang oleh addCardAiParsed)
+        if (thinkingSection != null) {
+            messagesView.removeView(thinkingSection);
+            thinkingSection = null;
+            thinkingHeader = null;
+            thinkingBody = null;
+        }
+        thinkingExpanded = false;
         streamingText.setLength(0);
     }
 

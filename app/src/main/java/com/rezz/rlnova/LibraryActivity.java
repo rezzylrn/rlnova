@@ -258,7 +258,7 @@ public class LibraryActivity extends Activity implements
         new File(dir, modelId + ".gguf").delete();
         new File(dir, modelId + ".part").delete();
         DownloadState.remove(modelId);
-        showLibrary();
+        DownloadState.bumpVersion(); // BUG3: pemicu update in-place card (shape DONE → IDLE)
     }
 
     private int dp(int v) {

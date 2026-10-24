@@ -236,6 +236,25 @@ Java_com_rezz_rlnova_LlamaEngine_nativeGenerate(
     int32_t stop_reason = 0; // 0=eos/konteks, 1=user stop, 2=max_tokens
     std::vector<llama_token> cached_tokens(tokens); // buat penalties window
 
+    // BUG2 (v1.1.1): state think-block. generated_text menampung SEMUA output
+    // (untuk deteksi tag & window penalti); in_think = true while the open tag has no close yet.
+    std::string generated_text;
+    bool in_think = false;
+    int32_t forced_think_closes = 0;
+
+    // in_think_block: ada "<think>" tanpa "</think>" sesudahnya.
+    auto in_think_block = [](const std::string & s) -> bool {
+        const std::string OPEN  = "<" + std::string("think") + ">";
+        const std::string CLOSE = "<" + std::string("/think") + ">";
+        size_t open = s.rfind(OPEN);
+        if (open == std::string::npos) return false;
+        return s.find(CLOSE, open) == std::string::npos;
+    };
+    // update_think_state: panggil setelah generated_text bertambah.
+    auto update_think_state = [&](std::string & /*text*/, bool & flag) {
+        flag = in_think_block(generated_text);
+    };
+
     llama_token cur = 0;
     bool have_cur = false;
 
@@ -289,13 +308,47 @@ Java_com_rezz_rlnova_LlamaEngine_nativeGenerate(
         cur = llama_sampler_sample(e->sampler, e->ctx, -1);
         have_cur = true;
 
-        if (llama_vocab_is_eog(e->vocab, cur)) { stop_reason = 0; break; }
+        if (llama_vocab_is_eog(e->vocab, cur)) {
+            // BUG2 (v1.1.1): Qwen3-0.6B kadang memancarkan EOS (<|im_end|) tepat
+            // setelah blok <think> yang BELUM ditutup (small-model behavior).
+            // Kalau output sejauh ini masih di dalam think yang tidak tertutup,
+            // jangan berhenti: inject token literal "</think>" ke konteks lalu
+            // lanjutkan sampling supaya model masih menghasilkan jawaban.
+            if (forced_think_closes < 2 && in_think_block(generated_text)) {
+                const char * close_tag = "</think>";
+                std::vector<llama_token> ct(32);
+                int n_ct = llama_tokenize(e->vocab, close_tag, (int32_t) strlen(close_tag),
+                                          ct.data(), (int32_t) ct.size(), false, true);
+                if (n_ct > 0) {
+                    LOGI("EOS inside unclosed think block - injecting close tag (pass %d), continuing sampling",
+                         forced_think_closes + 1);
+                    for (int i = 0; i < n_ct; i++) {
+                        cur = ct[i];
+                        llama_batch batch = llama_batch_get_one(&cur, 1);
+                        int rc = llama_decode(e->ctx, batch);
+                        if (rc != 0) { LOGE("decode tag close gagal (%d)", rc); stop_reason = 0; break; }
+                        // tag masuk ke output + penalti window, tidak ke UI
+                        generated_text += close_tag;
+                        cached_tokens.push_back(ct[i]);
+                        n_generated++;
+                    }
+                    in_think = false;
+                    forced_think_closes++;
+                    continue; // sampling lanjutan: model harus memberi jawaban
+                }
+            }
+            stop_reason = 0;
+            break;
+        }
 
         char piece[192];
         int n = llama_token_to_piece(e->vocab, cur, piece, sizeof(piece), 0, true);
         if (n < 0) break;
 
-        pending.append(piece, (size_t) n);
+        std::string piece_s(piece, (size_t) n);
+        pending.append(piece_s);
+        generated_text.append(piece_s);
+        update_think_state(generated_text, in_think);
         flush(false);
 
         if (env->ExceptionCheck()) {
@@ -312,6 +365,7 @@ Java_com_rezz_rlnova_LlamaEngine_nativeGenerate(
 
     const auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    LOGI("generation selesai: nGen=%d stopReason=%d (0=eos/ctx,1=user,2=max) ms=%.0f", n_generated, stop_reason, ms);
     env->CallVoidMethod(thiz, midDone, (jint) n_generated, (jint) stop_reason, (jdouble) ms);
     return n_generated;
 }

@@ -92,7 +92,7 @@ public class SettingsFragment extends Fragment {
         // ---------------- TENTANG ----------------
         sectionLabel(root, "ABOUT");
 
-        row(ctx, root, "Version", "1.1.0", null);
+        row(ctx, root, "Version", "1.1.1", null);
         row(ctx, root, "Privacy policy", "", v -> showPrivacyDialog());
 
         return scroll;
