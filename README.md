@@ -22,16 +22,15 @@ The catalog lives in `app/src/main/assets/models.json` — add your own entries 
 
 ## Building
 
-Requirements: Linux, Android SDK (build-tools 34, platform android-34), Android NDK r23, CMake 3.28+, JDK 17+.
+Requirements: Linux, Android SDK (build-tools 34, platform android-34), JDK 17+.
+The native libraries (`libllama.so` etc.) are prebuilt for arm64-v8a and live in
+`app/src/main/jniLibs/` — no NDK needed for a normal build. (To rebuild them
+from source you need Android NDK r23 + CMake 3.28+: compile llama.cpp
+`--target llama` with `-DGGML_OPENMP=OFF`, then drop the `.so` files into
+`app/src/main/jniLibs/arm64-v8a/`.)
 
 ```bash
-# 1. Vendor llama.cpp (pinned commit used for v1.1.0)
-mkdir -p third_party
-git clone https://github.com/ggerganov/llama.cpp.git third_party/llama.cpp
-cd third_party/llama.cpp && git checkout 47c7869 && cd ../..
-
-# 2. Build the native libs, then the APK (no Gradle — build.sh drives
-#    CMake + aapt2 + d8 + apksigner directly)
+# Build the APK (no Gradle — build.sh drives aapt2 + d8 + apksigner directly)
 ./build.sh
 # -> ./Rlnova.apk
 ```
