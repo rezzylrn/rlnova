@@ -221,6 +221,9 @@ public class ChatRoomFragment extends Fragment {
         toolbarTitle.setTextColor(0xFFEDF1F7);
         toolbarTitle.setSingleLine(true);
         toolbarTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        // v1.1.4 FIX pill melar: batas lebar nama model — nama panjang jadi
+        // ellipsize, indikator Online/Offline tidak terdorong keluar layar.
+        toolbarTitle.setMaxWidth(dp(220));
         titleWrap.addView(toolbarTitle, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
@@ -231,8 +234,13 @@ public class ChatRoomFragment extends Fragment {
         titleWrap.addView(chev, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        // v1.1.4 FIX pill melar: WRAP_CONTENT tanpa weight — dulu (0, WRAP, 1f)
+        // bikin pill meregang mengisi seluruh sisa lebar toolbar. Spacer
+        // weight-1 di antara pill dan status menjaga indikator tetap di kanan.
         toolbar.addView(titleWrap, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        View titleSpacer = new View(ctx);
+        toolbar.addView(titleSpacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
         // status: dot + label dihitung dinamis (refreshStatusDot)
         LinearLayout status = new LinearLayout(ctx);
@@ -402,7 +410,24 @@ public class ChatRoomFragment extends Fragment {
     // ================================================================ riwayat
 
     private void loadHistory() {
-        if (!isAdded() || conv == null) return; // v1.1.3: conv dihapus → tidak render
+        if (!isAdded() || conv == null) return; // v1.1.3: conv dihapus → tidak render (note di onCreateView tidak tersentuh)
+        // v1.1.4 FIX bug dobel: bersihkan container sebelum render ulang dari DB.
+        // Dulu loadHistory hanya append — bubble user optimistis dari onSendClicked
+        // tetap ada, lalu finishGeneration() memuat ulang pesan yang sama dari DB
+        // (user 2x, AI 1x). Lepas referensi kartu streaming dulu supaya tidak
+        // menunjuk view yang dibuang; normalnya removeStreamingCard() sudah
+        // dipanggil sebelum finishGeneration() → di sini hanya jaga-jaga.
+        if (streamingBubble != null) {
+            stopThinkingDots();
+            streamingBubble = null;
+        }
+        if (thinkingSection != null) {
+            thinkingSection = null;
+            thinkingHeader = null;
+            thinkingBody = null;
+        }
+        thinkingExpanded = false;
+        messagesView.removeAllViews();
         List<ChatDatabase.Message> ms = ChatDatabase.get(getActivity()).getMessages(convId);
         for (ChatDatabase.Message m : ms) {
             if (m.role == ChatDatabase.ROLE_USER) {
