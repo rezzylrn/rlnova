@@ -65,6 +65,23 @@ public class LibraryActivity extends Activity implements
         GenerationService.setMainActivityRef(this); // auto-title: refresh list
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // v1.1.8: ekstrak espeak-ng-data.zip bila download-nya baru selesai
+        // (DownloadService tidak bisa ekstrak zip — dikerjakan di sini,
+        // background, sekali idempotent).
+        final Context c = this;
+        new Thread(() -> {
+            boolean before = VoiceCatalog.isTtsReady(c);
+            if (TtsEngine.maybeExtractEspeak(c)) {
+                android.util.Log.i("LibraryActivity", "espeak-ng-data extracted");
+            }
+            boolean after = VoiceCatalog.isTtsReady(c);
+            if (before != after) DownloadState.bumpVersion(); // refresh kartu voice
+        }, "rlnova-espeak-extract").start();
+    }
+
     static DeviceInfo collectDeviceInfo(Context ctx) {
         ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
         return DeviceInfo.fromDevice(am);
@@ -258,8 +275,13 @@ public class LibraryActivity extends Activity implements
     /** Hapus file model suara (kartu voice di Library). */
     public void deleteVoiceModel(String id) {
         File dir = new File(getFilesDir(), "models");
-        new File(dir, id + ".bin").delete();
-        new File(dir, id + ".part").delete();
+        if (id.equals(VoiceCatalog.PIPER_ESPEAK_ID)) {
+            // folder terekstrak + zip mentahnya
+            TtsEngine.deleteEspeakData(this);
+        } else {
+            new File(dir, id + ".bin").delete();
+            new File(dir, id + ".part").delete();
+        }
         DownloadState.remove(id);
         DownloadState.bumpVersion();
     }
@@ -267,6 +289,11 @@ public class LibraryActivity extends Activity implements
     /** Model suara siap dipakai (file .bin lengkap). */
     public boolean isVoiceModelReady() {
         return VoiceCatalog.isReady(this, VoiceCatalog.whisperTiny());
+    }
+
+    /** v1.1.8: model TTS (onnx + espeak terekstrak) siap dipakai. */
+    public boolean isTtsModelReady() {
+        return VoiceCatalog.isTtsReady(this);
     }
 
     // ---------- lainnya ----------

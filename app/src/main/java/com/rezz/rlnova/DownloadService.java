@@ -250,6 +250,15 @@ public class DownloadService extends Service {
                 // v1.1.7: ekstensi final mengikuti id — LLM pakai <id>.gguf,
                 // model suara (whisper) pakai <id>.bin. LLM id-nya mengandung
                 // "-q" kuantisasi... lebih aman: id voice punya prefix "voice-".
+                // v1.1.8: espeak-ng-data TIDAK di-rename — file .zip-nya tetap
+                // dipakai TtsEngine.maybeExtractEspeak (dihapus setelah ekstrak).
+                if (id.equals(VoiceCatalog.PIPER_ESPEAK_ID)) {
+                    st.status = DownloadState.DONE;
+                    updateNotification(st, id);
+                    notifyUiChanged();
+                    stopIfIdle();
+                    return;
+                }
                 String ext = id.startsWith("voice-") ? ".bin" : ".gguf";
                 File dst = new File(dir, id + ext);
                 if (!out.renameTo(dst)) {

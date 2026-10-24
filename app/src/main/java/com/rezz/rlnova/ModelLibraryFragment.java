@@ -55,6 +55,7 @@ public class ModelLibraryFragment extends android.app.Fragment {
     private final android.os.Handler handler = new android.os.Handler();
     private TextView chipAll, chipLow, chipMid, chipHigh;
     private LinearLayout list;
+    private LinearLayout voiceSection; // v1.1.8: section model suara (STT/TTS)
     private ModelCatalog catalog;
     private DeviceInfo device;
     private int filter = FILTER_ALL;
@@ -149,6 +150,24 @@ public class ModelLibraryFragment extends android.app.Fragment {
         list.setOrientation(LinearLayout.VERTICAL);
         root.addView(list);
 
+        // ---- v1.1.8: section "Voice models" (STT + TTS on-device) ----
+        // Terpisah dari daftar LLM supaya tidak membingungkan — model suara
+        // diunduh lewat DownloadService yang sama, disimpan sebagai .bin/.zip.
+        TextView voiceLabel = new TextView(ctx);
+        voiceLabel.setText("Voice models");
+        voiceLabel.setTextColor(0xFF9AA6B8);
+        voiceLabel.setTextSize(12);
+        voiceLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        voiceLabel.setAllCaps(true);
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        vlp.topMargin = dp(24);
+        vlp.bottomMargin = dp(6);
+        root.addView(voiceLabel, vlp);
+        voiceSection = new LinearLayout(ctx);
+        voiceSection.setOrientation(LinearLayout.VERTICAL);
+        root.addView(voiceSection);
+
         scroll.addView(root);
         return scroll;
     }
@@ -186,6 +205,7 @@ public class ModelLibraryFragment extends android.app.Fragment {
         resumed = true;
         lastVersion = -1;      // paksa sinkron pertama
         rebuildList();
+        rebuildVoiceSection();
         handler.post(poll);
     }
 
@@ -197,11 +217,175 @@ public class ModelLibraryFragment extends android.app.Fragment {
     }
 
     /**
+     * v1.1.8: render ulang section Voice models (STT whisper + TTS Piper).
+     * Dipanggil dari onResume dan setiap uiVersion naik — murah (2 card).
+     */
+    private void rebuildVoiceSection() {
+        if (voiceSection == null || !isAdded()) return;
+        voiceSection.removeAllViews();
+        addVoiceCard(VoiceCatalog.whisperTiny());
+        addVoiceCard(VoiceCatalog.piperId());
+    }
+
+    /** Kartu model suara di section Voice models (pola card LLM, lebih sederhana). */
+    private void addVoiceCard(final VoiceCatalog.VoiceModel vm) {
+        Context ctx = getActivity();
+        if (ctx == null) return;
+        LinearLayout card = new LinearLayout(ctx);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackgroundResource(R.drawable.bg_card_ripple);
+        int p = dp(16);
+        card.setPadding(p, p, p, p);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.topMargin = dp(8);
+        card.setLayoutParams(clp);
+
+        TextView name = new TextView(ctx);
+        name.setText(vm.name);
+        name.setTextColor(0xFFEDF1F7);
+        name.setTextSize(16);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        card.addView(name);
+
+        TextView desc = new TextView(ctx);
+        desc.setText(vm.description);
+        desc.setTextColor(0xFF9AA6B8);
+        desc.setTextSize(14);
+        desc.setMaxLines(2);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp.topMargin = dp(6);
+        card.addView(desc, dlp);
+
+        LinearLayout actionRow = new LinearLayout(ctx);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        alp.topMargin = dp(12);
+        card.addView(actionRow, alp);
+        fillVoiceActionRow(actionRow, vm);
+        voiceSection.addView(card);
+    }
+
+    /** Baris aksi kartu model suara (state unduh: idle / progress / done). */
+    private void fillVoiceActionRow(final LinearLayout row, final VoiceCatalog.VoiceModel vm) {
+        row.removeAllViews();
+        DownloadState st = DownloadState.get(vm.id);
+        // espeak "ready" berarti folder terekstrak ada (zip sudah dihapus) —
+        // untuk id lain cukup cek file via VoiceCatalog.isReady.
+        boolean done = vm.id.equals(VoiceCatalog.PIPER_ESPEAK_ID)
+                ? VoiceCatalog.isTtsReady(getActivity())
+                : VoiceCatalog.isReady(getActivity(), vm);
+
+        if (done) {
+            TextView ok = new TextView(getActivity());
+            ok.setText("On this device");
+            ok.setTextColor(0xFF34C77B);
+            ok.setTextSize(14);
+            ok.setTypeface(Typeface.DEFAULT_BOLD);
+            row.addView(ok, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            TextView del = new TextView(getActivity());
+            del.setText("Delete");
+            del.setTextColor(0xFFE5484D);
+            del.setTextSize(14);
+            del.setTypeface(Typeface.DEFAULT_BOLD);
+            del.setPadding(dp(16), 0, 0, 0);
+            del.setMinHeight(dp(48));
+            del.setGravity(Gravity.CENTER);
+            del.setOnClickListener(v -> ((LibraryActivity) getActivity()).deleteVoiceModel(vm.id));
+            row.addView(del, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            return;
+        }
+
+        if (st.status == DownloadState.DOWNLOADING || st.status == DownloadState.PAUSED) {
+            LinearLayout progressCol = new LinearLayout(getActivity());
+            progressCol.setOrientation(LinearLayout.VERTICAL);
+            ProgressBar bar = new ProgressBar(getActivity(), null,
+                    android.R.attr.progressBarStyleHorizontal);
+            bar.setProgress(DownloadState.progressPercent(st));
+            bar.setProgressDrawable(getResources().getDrawable(R.drawable.progress_download));
+            bar.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(4)));
+            progressCol.addView(bar);
+            TextView info = new TextView(getActivity());
+            info.setText(DownloadState.formatBytes(st.downloaded) + " of "
+                    + DownloadState.formatBytes(st.total)
+                    + (st.speed != null && st.status == DownloadState.DOWNLOADING
+                       ? " · " + st.speed : ""));
+            info.setTextColor(0xFF7C8AA5);
+            info.setTextSize(12);
+            info.setTypeface(Typeface.MONOSPACE);
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            ip.topMargin = dp(4);
+            progressCol.addView(info, ip);
+            row.addView(progressCol, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            TextView cancel = new TextView(getActivity());
+            cancel.setText("Cancel");
+            cancel.setTextColor(0xFFE5484D);
+            cancel.setPadding(dp(16), 0, 0, 0);
+            cancel.setMinHeight(dp(48));
+            cancel.setGravity(Gravity.CENTER);
+            cancel.setOnClickListener(v -> {
+                Intent i = new Intent(getActivity(), DownloadService.class);
+                i.setAction(DownloadService.ACTION_CANCEL);
+                i.putExtra(DownloadService.EXTRA_ID, vm.id);
+                Context c = getActivity();
+                if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i);
+                else c.startService(i);
+            });
+            row.addView(cancel, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            return;
+        }
+
+        // IDLE: caption ukuran + tombol Download (download TTS voice sekaligus
+        // memicu download espeak-ng-data supaya user tidak download 2x manual).
+        LinearLayout line = new LinearLayout(getActivity());
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        TextView cap = new TextView(getActivity());
+        cap.setText(DeviceInfo.formatBytes(vm.sizeBytes) + " · Not downloaded");
+        cap.setTextColor(0xFF5B6678);
+        cap.setTextSize(12);
+        line.addView(cap, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView dl = new TextView(getActivity());
+        dl.setText("Download");
+        dl.setTextColor(Color.WHITE);
+        dl.setTypeface(Typeface.DEFAULT_BOLD);
+        dl.setTextSize(14);
+        dl.setBackgroundResource(R.drawable.bg_button_primary);
+        dl.setPadding(dp(20), dp(10), dp(20), dp(10));
+        dl.setOnClickListener(v -> {
+            LibraryActivity host = (LibraryActivity) getActivity();
+            host.startVoiceDownload(vm);
+            if (vm.id.equals(VoiceCatalog.PIPER_ID_ID)
+                    && DownloadState.get(VoiceCatalog.PIPER_ESPEAK_ID).status
+                       != DownloadState.DOWNLOADING
+                    && !VoiceCatalog.isTtsReady(getActivity())) {
+                host.startVoiceDownload(VoiceCatalog.piperEspeak());
+            }
+        });
+        row.addView(line, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(dl, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    /**
      * BUG3: uiVersion naik (download progress ~2x/dtk) TIDAK membangun ulang
      * list. Cukup update in-place card yang terdampak.
      */
     private void onDownloadStateVersionBump() {
         lastVersion = DownloadState.uiVersion();
+        rebuildVoiceSection();
         for (ModelCatalog.Model m : new ArrayList<>(catalog.models)) {
             View card = cardViews.get(m.id);
             if (card == null) continue; // card tidak tampil (filter) — abaikan

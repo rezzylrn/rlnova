@@ -26,6 +26,8 @@ import android.widget.TextView;
 import java.util.List;
 import java.util.Locale;
 
+import com.k2fsa.sherpa.onnx.GeneratedAudio;
+
 /**
  * ChatRoomFragment (mockup 03, chat room page).
  *
@@ -418,6 +420,7 @@ public class ChatRoomFragment extends Fragment {
     public void onPause() {
         ui.removeCallbacks(statusPoll);
         GenerationState.get().removeListener(stateListener);
+        stopSpeaking(); // v1.1.8: fragment pause = berhenti bicara
         super.onPause();
     }
 
@@ -501,6 +504,7 @@ public class ChatRoomFragment extends Fragment {
     /** UI masuk mode generating (footer live + Send terkunci). */
     private void enterGeneratingUi() {
         GenerationState st = GenerationState.get();
+        stopSpeaking(); // v1.1.8: generation baru = berhenti bicara
         generating = true;
         thinkingExpanded = false;
         footer.setVisibility(View.VISIBLE);
@@ -935,6 +939,7 @@ public class ChatRoomFragment extends Fragment {
     }
 
     private void addCardAi(String content) {
+        Context c = getActivity();
         TextView card = new TextView(getActivity());
         card.setText(content);
         card.setTextSize(14);
@@ -947,12 +952,29 @@ public class ChatRoomFragment extends Fragment {
             copyToClipboard(content);
             return true;
         });
+        // v1.1.8: tombol speaker kecil di bawah kartu jawaban
+        TextView speak = new TextView(c);
+        speak.setText("Speak");
+        speak.setTextSize(12);
+        speak.setTypeface(Typeface.DEFAULT_BOLD);
+        speak.setTextColor(0xFF5B8DEF);
+        speak.setPadding(dp(4), dp(2), dp(4), dp(2));
+        speak.setMinHeight(dp(32));
+        speak.setGravity(Gravity.CENTER_VERTICAL);
+        speak.setOnClickListener(v -> onSpeakClicked(speak, content));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        slp.topMargin = dp(2);
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.addView(card);
+        row.addView(speak, slp);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.START;
         lp.rightMargin = dp(48);
         lp.topMargin = dp(8);
-        messagesView.addView(card, lp);
+        messagesView.addView(row, lp);
     }
 
     private TextView addStatsRow() {
@@ -1006,6 +1028,7 @@ public class ChatRoomFragment extends Fragment {
     public void onDestroy() {
         stopRecording();       // buang recorder + thread-nya
         freeWhisper();         // bebaskan model STT bila dimuat
+        freeTts();             // v1.1.8: bebaskan TTS + stop playback
         super.onDestroy();
     }
 
@@ -1198,6 +1221,98 @@ public class ChatRoomFragment extends Fragment {
 
     private void freeWhisper() {
         new Thread(() -> whisperEngine.free(), "rlnova-stt-free").start();
+    }
+
+    // ====================================================== v1.1.8: TTS speak
+
+    private final TtsEngine ttsEngine = new TtsEngine();
+    private volatile Thread ttsWorker;      // worker sintesis+playback aktif
+    private volatile boolean speaking = false;
+
+    /**
+     * Tap tombol speaker: mulai/stop membacakan teks jawaban. Satu suara
+     * dalam satu waktu — tap saat bicara = berhenti. Sintesis + playback
+     * jalan di worker thread (blocking), update UI via Handler.
+     */
+    private void onSpeakClicked(final TextView btn, final String text) {
+        if (speaking) { stopSpeaking(); return; }
+        if (ttsWorker != null && ttsWorker.isAlive()) return; // sintesis lain jalan
+        android.app.Activity act = getActivity();
+        if (act == null || text == null || text.trim().isEmpty()) return;
+
+        if (!VoiceCatalog.isTtsReady(act)) {
+            // Model TTS belum siap → arahkan download, jangan pakai suara sistem.
+            DownloadState st = DownloadState.get(VoiceCatalog.PIPER_ID_ID);
+            DownloadState se = DownloadState.get(VoiceCatalog.PIPER_ESPEAK_ID);
+            if (st.status == DownloadState.DOWNLOADING || st.status == DownloadState.PAUSED
+                    || st.status == DownloadState.DONE
+                    || DownloadState.get(VoiceCatalog.PIPER_ESPEAK_ID).status
+                       == DownloadState.DOWNLOADING) {
+                toast("TTS voice is still downloading — check the Library tab");
+            } else {
+                toast("Download the Piper voice model first (Library > Voice models)");
+                if (getActivity() instanceof LibraryActivity) {
+                    ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperId());
+                    ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperEspeak());
+                }
+            }
+            return;
+        }
+
+        speaking = true;
+        btn.setText("Stop");
+        btn.setTextColor(0xFFE5484D);
+        final android.app.Activity activity = act;
+        ttsWorker = new Thread(() -> {
+            try {
+                TtsEngine.loadLibrary();
+            } catch (Throwable t) {
+                ui.post(() -> { toast("TTS engine failed to load"); resetSpeakButton(btn); });
+                speaking = false;
+                return;
+            }
+            if (!ttsEngine.init(activity)) {
+                ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
+                speaking = false;
+                return;
+            }
+            GeneratedAudio audio = ttsEngine.generate(text);
+            if (audio == null || audio.getSamples() == null || audio.getSamples().length == 0) {
+                ui.post(() -> { toast("Speech synthesis failed"); resetSpeakButton(btn); });
+                speaking = false;
+                return;
+            }
+            boolean ok = ttsEngine.play(audio);
+            if (ok) {
+                // tunggu playback selesai ATAU stopPlayback() dari thread lain
+                while (speaking) {
+                    try { Thread.sleep(120); } catch (InterruptedException e) { break; }
+                }
+            }
+            ttsEngine.stopPlayback();
+            ui.post(() -> resetSpeakButton(btn));
+            speaking = false;
+        }, "rlnova-tts");
+        ttsWorker.start();
+    }
+
+    private void stopSpeaking() {
+        speaking = false;
+        ttsEngine.stopPlayback();
+        if (ttsWorker != null) ttsWorker.interrupt();
+    }
+
+    /** Kosongkan TTS native (dipanggil di onDestroy — background thread). */
+    private void freeTts() {
+        stopSpeaking();
+        new Thread(() -> ttsEngine.free(), "rlnova-tts-free").start();
+    }
+
+    private void resetSpeakButton(TextView btn) {
+        if (btn != null) {
+            btn.setText("Speak");
+            btn.setTextColor(0xFF5B8DEF);
+        }
     }
 
     private int dp(int v) {
