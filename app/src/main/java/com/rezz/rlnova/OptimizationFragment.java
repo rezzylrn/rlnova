@@ -29,9 +29,8 @@ import java.util.List;
  * button -> nativeBench on a background thread (blocks until done; the
  * result is appended to PerfPrefs).
  *
- * Card "Performance parameters": 3 sliders + values, 2 switches (Use GPU —
- * default OFF + warning caption on Mali; Battery saver —
- * threads/2 + GPU 0).
+ * Card "Performance parameters": 2 sliders + values, 1 switch (Battery saver —
+ * threads/2).
  *
  * "Save settings" (bumps the epoch -> chat reloads the model) +
  * "Apply benchmark result" (auto-tune from the fastest history entry).
@@ -47,10 +46,9 @@ public class OptimizationFragment extends Fragment {
     private static final int COL_BAR     = 0xFF5B8DEF;
     private static final int COL_BAR_DIM = 0xFF3A4358;
 
-    private SeekBar sbThreads, sbGpu, sbCtx;
-    private TextView tvThreads, tvGpu, tvCtx;
-    private android.widget.Switch swGpu, swBattery;
-    private TextView tvGpuCaption;
+    private SeekBar sbThreads, sbCtx;
+    private TextView tvThreads, tvCtx;
+    private android.widget.Switch swBattery;
     private TextView bigNumber;
     private BarChartView chart;
     private TextView benchHint;
@@ -153,27 +151,16 @@ public class OptimizationFragment extends Fragment {
         tvThreads = monoValue(rowT);
         sbThreads = sliderBar(rowT, 0, cores - 1, perf.threads - 1, "cpu");
 
-        LinearLayout rowG = sliderRow(card2, "GPU layers");
-        tvGpu = monoValue(rowG);
-        sbGpu = sliderBar(rowG, 0, 99, perf.gpuLayers, "gpu");
-
         LinearLayout rowC = sliderRow(card2, "Context size");
         tvCtx = monoValue(rowC);
         tvCtx.setText(String.valueOf(perf.nCtx));
         sbCtx = sliderBarCtx(rowC, perf.nCtx);
 
-        LinearLayout gpuRow = switchRow(ctx, "GPU offload (Vulkan)", perf.useGpu);
-        swGpu = (android.widget.Switch) gpuRow.getTag();
-        card2.addView(gpuRow);
-        tvGpuCaption = caption(ctx);
-        card2.addView(tvGpuCaption);
-        updateGpuCaption();
-
         LinearLayout batRow = switchRow(ctx, "Battery saver mode", perf.battery);
         swBattery = (android.widget.Switch) batRow.getTag();
         card2.addView(batRow);
         TextView batCap = new TextView(ctx);
-        batCap.setText("Threads are halved and GPU is off while this mode is on");
+        batCap.setText("CPU threads are halved while this mode is on");
         batCap.setTextColor(COL_SUB);
         batCap.setTextSize(11);
         batCap.setPadding(dp(4), 0, 0, dp(8));
@@ -265,7 +252,6 @@ public class OptimizationFragment extends Fragment {
         r.timestamp = System.currentTimeMillis();
         PerfPrefs.Perf cur = PerfPrefs.load(ctx, device);
         r.threads = perf.effectiveThreads(device != null ? device.cpuCores : 4);
-        r.gpuLayers = perf.effectiveGpuLayers();
         r.ctx = perf.nCtx;
         r.prefillTps = prefill;
         r.decodeTps = decode;
@@ -301,8 +287,8 @@ public class OptimizationFragment extends Fragment {
         PerfPrefs.applyBench(ctx, best);
         perf = PerfPrefs.load(ctx, device);
         syncControlsToPerf();
-        Toast.makeText(ctx, "Applied: " + perf.threads + " threads, GPU "
-                + perf.gpuLayers + " layers, context " + perf.nCtx, Toast.LENGTH_LONG).show();
+        Toast.makeText(ctx, "Applied: " + perf.threads + " threads, context "
+                + perf.nCtx, Toast.LENGTH_LONG).show();
     }
 
     private void saveSettings() {
@@ -310,9 +296,7 @@ public class OptimizationFragment extends Fragment {
         if (ctx == null) return;
         PerfPrefs.Perf p = new PerfPrefs.Perf();
         p.threads = sbThreads.getProgress() + 1; // slider index -> value 1..cores
-        p.gpuLayers = sbGpu.getProgress();
         p.nCtx = 1024 + sbCtx.getProgress() * 1024;
-        p.useGpu = swGpu.isChecked();
         p.battery = swBattery.isChecked();
         PerfPrefs.save(ctx, p);
         Toast.makeText(ctx, "Settings saved — reload the model to apply",
@@ -324,14 +308,10 @@ public class OptimizationFragment extends Fragment {
         int t = Math.min(perf.threads, cores);
         sbThreads.setProgress(perf.threads);
         tvThreads.setText(String.valueOf(perf.threads));
-        sbGpu.setProgress(perf.gpuLayers);
-        tvGpu.setText(String.valueOf(perf.gpuLayers));
         int prog = Math.max(0, Math.min(7, (perf.nCtx - 1024) / 1024));
         sbCtx.setProgress(prog);
         tvCtx.setText(String.valueOf(1024 + prog * 1024));
-        swGpu.setChecked(perf.useGpu);
         swBattery.setChecked(perf.battery);
-        updateGpuCaption();
     }
 
     // ---------------------------------------------------------- widgets
@@ -403,7 +383,6 @@ public class OptimizationFragment extends Fragment {
                 if (!fromUser) return;
                 int v = fmin + progress;
                 if ("cpu".equals(kind)) onThreadsChanged(v);
-                else if ("gpu".equals(kind)) onGpuChanged(v);
                 else onCtxChanged(1024 + v * 1024);
             }
             @Override public void onStartTrackingTouch(SeekBar s) { }
@@ -420,7 +399,6 @@ public class OptimizationFragment extends Fragment {
                 if (!fromUser) return;
                 int v = min + progress;
                 if ("cpu".equals(kind)) onThreadsChanged(v);
-                else if ("gpu".equals(kind)) onGpuChanged(v);
                 else onCtxChanged(1024 + v * 1024);
             }
             @Override public void onStartTrackingTouch(SeekBar s) { }
@@ -457,12 +435,6 @@ public class OptimizationFragment extends Fragment {
         perf.threads = v;
     }
 
-    private void onGpuChanged(int v) {
-        if (tvGpu != null) tvGpu.setText(String.valueOf(v));
-        perf.gpuLayers = v;
-        updateGpuCaption();
-    }
-
     private void onCtxChanged(int v) {
         if (tvCtx != null) tvCtx.setText(String.valueOf(v));
         perf.nCtx = v;
@@ -494,14 +466,6 @@ public class OptimizationFragment extends Fragment {
         return row;
     }
 
-    private TextView caption(Context ctx) {
-        TextView t = new TextView(ctx);
-        t.setTextColor(COL_SUB);
-        t.setTextSize(12);
-        t.setPadding(dp(4), 0, 0, 0);
-        return t;
-    }
-
     private TextView primaryButton(Context ctx, String label) {
         TextView b = new TextView(ctx);
         b.setText(label);
@@ -511,20 +475,6 @@ public class OptimizationFragment extends Fragment {
         b.setGravity(Gravity.CENTER);
         b.setBackgroundResource(R.drawable.bg_button_primary);
         return b;
-    }
-
-    private void updateGpuCaption() {
-        boolean mali = PerfPrefs.isMaliGpu();
-        if (swGpu.isChecked() && mali) {
-            tvGpuCaption.setText("Warning: Vulkan on Mali GPUs is unstable — may fall back to CPU");
-            tvGpuCaption.setTextColor(0xFFF2A93B);
-        } else if (!swGpu.isChecked()) {
-            tvGpuCaption.setText("Inference runs fully on the CPU (default)");
-        } else {
-            tvGpuCaption.setText(perf.gpuLayers > 0
-                    ? perf.gpuLayers + " model layers delegated to the GPU (Vulkan, experimental)"
-                    : "GPU on but 0 layers — set GPU layers above");
-        }
     }
 
     // ---------------------------------------------------------- bar chart

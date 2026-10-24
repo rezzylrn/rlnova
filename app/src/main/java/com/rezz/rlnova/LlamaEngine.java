@@ -27,21 +27,12 @@ public final class LlamaEngine {
     private static final String TAG = "LlamaEngine";
     private static volatile boolean loaded = false;
 
-    /** Load the .so chain in order (inter-library deps). MUST run on a background thread.
-     *  v1.1.5: ggml-vulkan dimuat juga (backend GPU). DT_NEEDED-nya libggml-base +
-     *  libvulkan (system) — dimuat SETELAH ggml, SESUDAH ggml-cpu, SEBELUM llama. */
+    /** Load the .so chain in order (inter-library deps). MUST run on a background thread. */
     public static synchronized void loadLibrary() throws UnsatisfiedLinkError {
         if (loaded) return;
         System.loadLibrary("ggml-base");
         System.loadLibrary("ggml-cpu");
         System.loadLibrary("ggml");
-        try {
-            System.loadLibrary("ggml-vulkan");
-        } catch (UnsatisfiedLinkError e) {
-            // Device tanpa driver Vulkan / lib rusak: backend Vulkan tidak
-            // terdaftar — engine tetap jalan penuh di CPU (fallback diam).
-            android.util.Log.w(TAG, "libggml-vulkan tidak bisa dimuat — CPU only", e);
-        }
         System.loadLibrary("llama");
         System.loadLibrary("rlnova-bridge");
         loaded = true;
@@ -60,8 +51,8 @@ public final class LlamaEngine {
     // ---------------------------------------------------------------- init
 
     /**
-     * Muat model dengan config performa tersimpan (PerfPrefs): threads,
-     * gpuLayers, dan contextTokens. Blocking — panggil dari background thread.
+     * Muat model dengan config performa tersimpan (PerfPrefs): threads dan
+     * contextTokens. Blocking — panggil dari background thread.
      * @param perf prefs performa (PerfPrefs.load()); null = default CPU 2 thread.
      * @return true kalau model siap.
      */
@@ -70,30 +61,17 @@ public final class LlamaEngine {
     }
 
     /**
-     * Muat model dengan PerfPrefs (threads/GPU layers/ctx dari SharedPreferences).
-     * v1.1.5: kalau gpuLayers > 0 tapi init gagal (driver Vulkan tidak ada /
-     * tidak cocok / OOM GPU), FALLBACK DIAM-DIAM ke CPU (gpuLayers=0) — sekali
-     * saja. Fallback TIDAK mengubah prefs tersimpan.
+     * Muat model dengan PerfPrefs (threads/ctx dari SharedPreferences).
+     * Prefers effectiveThreads (mode hemat baterai diperhitungkan).
      * @return true kalau model siap.
      */
     public boolean init(String modelPath, int contextTokens, int threads, PerfPrefs.Perf perf) {
         if (handle != 0) return true;
-        int gpuLayers = 0, nCtx = contextTokens;
+        int nCtx = contextTokens;
         if (perf != null) {
             threads = perf.effectiveThreads(Runtime.getRuntime().availableProcessors());
-            gpuLayers = perf.effectiveGpuLayers();
         }
-        if (gpuLayers > 0) {
-            handle = nativeInit(modelPath, contextTokens, threads, gpuLayers);
-            if (handle == 0) {
-                // fallback senyap: init GPU gagal → CPU penuh, engine tetap Online
-                android.util.Log.w(TAG, "init dgn GPU layers=" + gpuLayers
-                        + " gagal — fallback ke CPU");
-                handle = nativeInit(modelPath, contextTokens, threads, 0);
-            }
-        } else {
-            handle = nativeInit(modelPath, contextTokens, threads, 0);
-        }
+        handle = nativeInit(modelPath, contextTokens, threads, 0);
         return handle != 0;
     }
 

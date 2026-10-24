@@ -9,22 +9,19 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Preferensi performa (panel Optimasi, mockup 05) + history benchmark.
  * Tanpa dependency: SharedPreferences "perf" + CSV app-private perf_history.csv.
  *
- * Format baris CSV: timestamp;threads;gpuLayers;ctx;prefillTps;decodeTps
+ * Format baris CSV: timestamp;threads;ctx;prefillTps;decodeTps
  * (header "timestamp;..." ditulis sekali).
  */
 public final class PerfPrefs {
 
     public static final class Perf {
         public int threads;
-        public int gpuLayers;
         public int nCtx;
-        public boolean useGpu;
         public boolean battery;
 
         /** Threads efektif: mode hemat baterai = threads/2. */
@@ -33,21 +30,16 @@ public final class PerfPrefs {
             if (cores > 0 && t > cores) t = cores;
             return Math.max(1, t);
         }
-
-        /** GPU efektif: hemat baterai / switch GPU OFF / Mali → 0. */
-        public int effectiveGpuLayers() {
-            return (battery || !useGpu) ? 0 : Math.max(0, gpuLayers);
-        }
     }
 
     /** Satu baris history benchmark. */
     public static final class BenchRecord {
         public long timestamp;
-        public int threads, gpuLayers, ctx;
+        public int threads, ctx;
         public float prefillTps, decodeTps;
 
         public String summary() {
-            return threads + " threads · GPU " + gpuLayers + " layers · ctx " + ctx;
+            return threads + " threads · ctx " + ctx;
         }
     }
 
@@ -63,18 +55,12 @@ public final class PerfPrefs {
         if (dev == null) dev = currentDevice(ctx);
         int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
         Perf p = new Perf();
-        boolean mali = isMaliGpu();
         boolean hasSaved = sp.contains("threads");
 
         p.threads = sp.getInt("threads",
                 dev != null ? dev.recommendedThreads() : Math.max(1, cores - 2));
         p.threads = clamp(p.threads, 1, cores);
         p.nCtx = sp.getInt("nCtx", dev != null ? defaultCtx(dev.tier()) : 2048);
-        // v1.1.5: GPU default OFF — Vulkan offload eksperimental, offload hanya
-        // aktif kalau user menyalakan switch di panel Optimasi.
-        p.useGpu = sp.getBoolean("useGpu", false);
-        int defLayers = mali ? 0 : (p.useGpu && dev != null ? defaultGpuLayers(dev) : 0);
-        p.gpuLayers = clamp(sp.getInt("gpuLayers", defLayers), 0, 99);
         p.battery = sp.getBoolean("battery", false);
         return p;
     }
@@ -87,21 +73,17 @@ public final class PerfPrefs {
     public static void save(Context ctx, Perf p) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putInt("threads", p.threads)
-                .putInt("gpuLayers", p.gpuLayers)
                 .putInt("nCtx", p.nCtx)
-                .putBoolean("useGpu", p.useGpu)
                 .putBoolean("battery", p.battery)
                 .apply();
         saveEpoch++; // ChatRoomFragment paksa reload model saat epoch berubah
     }
 
-    /** Auto-tune: set threads + gpuLayers + ctx dari benchmark tercepat tercatat. */
+    /** Auto-tune: set threads + ctx dari benchmark tercepat tercatat. */
     public static void applyBench(Context ctx, BenchRecord r) {
         if (r == null) return;
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putInt("threads", r.threads)
-                .putInt("gpuLayers", r.gpuLayers)
-                .putBoolean("useGpu", r.gpuLayers > 0)
                 .putInt("nCtx", r.ctx)
                 .apply();
     }
@@ -117,8 +99,8 @@ public final class PerfPrefs {
             File f = historyFile(ctx);
             boolean fresh = !f.exists();
             FileWriter w = new FileWriter(f, true);
-            if (fresh) w.write("timestamp;threads;gpuLayers;ctx;prefillTps;decodeTps\n");
-            w.write(r.timestamp + ";" + r.threads + ";" + r.gpuLayers + ";" + r.ctx
+            if (fresh) w.write("timestamp;threads;ctx;prefillTps;decodeTps\n");
+            w.write(r.timestamp + ";" + r.threads + ";" + r.ctx
                     + ";" + r.prefillTps + ";" + r.decodeTps + "\n");
             w.close();
         } catch (Exception ignored) { }
@@ -161,10 +143,9 @@ public final class PerfPrefs {
                 try {
                     r.timestamp   = Long.parseLong(p[0]);
                     r.threads     = Integer.parseInt(p[1]);
-                    r.gpuLayers   = Integer.parseInt(p[2]);
-                    r.ctx         = Integer.parseInt(p[3]);
-                    r.prefillTps  = Float.parseFloat(p[4]);
-                    r.decodeTps   = Float.parseFloat(p[5]);
+                    r.ctx         = Integer.parseInt(p[2]);
+                    r.prefillTps  = Float.parseFloat(p[3]);
+                    r.decodeTps   = Float.parseFloat(p[4]);
                 } catch (NumberFormatException e) { continue; }
                 out.add(r);
             }
@@ -178,46 +159,13 @@ public final class PerfPrefs {
     public static DeviceInfo currentDevice(Context ctx) {
         android.app.ActivityManager am =
                 (android.app.ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
-        boolean vk = hasVulkan(ctx);
-        return DeviceInfo.fromDevice(am, vk);
-    }
-
-    /** Vulkan tersedia? (PackageManager feature) */
-    public static boolean hasVulkan(Context ctx) {
-        try {
-            return ctx.getPackageManager().hasSystemFeature("android.hardware.vulkan.level");
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    /** GPU Mali / Exynos terdeteksi → Vulkan dikenal tidak stabil (default OFF). */
-    public static boolean isMaliGpu() {
-        try {
-            String hw  = android.os.Build.HARDWARE;
-            String brd = android.os.Build.BOARD;
-            String chip = android.os.Build.VERSION.SDK_INT >= 31 ? android.os.Build.SOC_MODEL : "";
-            String all = ((hw == null ? "" : hw) + " " + (brd == null ? "" : brd)
-                    + " " + (chip == null ? "" : chip)).toLowerCase(Locale.US);
-            return all.contains("mali") || all.contains("exynos");
-        } catch (Exception e) {
-            return false;
-        }
+        return DeviceInfo.fromDevice(am);
     }
 
     public static int defaultCtx(DeviceInfo.Tier tier) {
         if (tier == DeviceInfo.Tier.HIGH) return 8192;
         if (tier == DeviceInfo.Tier.MID) return 4096;
         return 2048;
-    }
-
-    private static int defaultGpuLayers(DeviceInfo dev) {
-        if (dev == null) return 0;
-        switch (dev.tier()) {
-            case HIGH: return 99;
-            case MID:  return 16;
-            default:   return 8;
-        }
     }
 
     private static int clamp(int v, int lo, int hi) {

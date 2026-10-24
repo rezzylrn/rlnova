@@ -13,9 +13,8 @@ target_include_directories(rlnova-bridge PRIVATE
         ${LLAMA_DIR}/include
         ${LLAMA_DIR}/ggml/include)
 
-# Prebuilt dari M1/vulkan — CMAKE_LIBRARY_OUTPUT_DIRECTORY dikosongkan; path
-# absolut langsung ke build-android/bin (hasil build libllama.so dgn backend
-# Vulkan, v1.1.5; DT_NEEDED libggml-vulkan).
+# Prebuilt dari M1 — CMAKE_LIBRARY_OUTPUT_DIRECTORY dikosongkan; path absolut
+# langsung ke build-android/bin (hasil build libllama.so M1).
 add_library(llama SHARED IMPORTED)
 set_target_properties(llama PROPERTIES IMPORTED_LOCATION
         ${PROJ_ROOT}/build-android/bin/libllama.so)

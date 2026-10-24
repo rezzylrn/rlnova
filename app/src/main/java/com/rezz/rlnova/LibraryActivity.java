@@ -66,15 +66,8 @@ public class LibraryActivity extends Activity implements
     }
 
     static DeviceInfo collectDeviceInfo(Context ctx) {
-        boolean vulkan;
-        try {
-            PackageManager pm = ctx.getPackageManager();
-            vulkan = pm.hasSystemFeature("android.hardware.vulkan.level");
-        } catch (Exception e) {
-            vulkan = false;
-        }
         ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
-        return DeviceInfo.fromDevice(am, vulkan);
+        return DeviceInfo.fromDevice(am);
     }
 
     // ---------- BottomNav ----------

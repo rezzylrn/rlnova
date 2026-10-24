@@ -22,19 +22,17 @@ public final class DeviceInfo {
     public final int cpuCores;
     public final String chipset;
     public final long freeStorageBytes;
-    public final boolean hasVulkan;
 
     public DeviceInfo(long totalRamBytes, int cpuCores, String chipset,
-                      long freeStorageBytes, boolean hasVulkan) {
+                      long freeStorageBytes) {
         this.totalRamBytes = totalRamBytes;
         this.cpuCores = cpuCores;
         this.chipset = chipset;
         this.freeStorageBytes = freeStorageBytes;
-        this.hasVulkan = hasVulkan;
     }
 
     /** Bangun dari perangkat nyata. */
-    public static DeviceInfo fromDevice(ActivityManager am, boolean hasVulkan) {
+    public static DeviceInfo fromDevice(ActivityManager am) {
         android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
         am.getMemoryInfo(mi);
         long ram = mi.totalMem;
@@ -46,7 +44,7 @@ public final class DeviceInfo {
             StatFs stat = new StatFs(android.os.Environment.getDataDirectory().getPath());
             free = stat.getAvailableBytes();
         } catch (Exception ignored) { }
-        return new DeviceInfo(ram, cores, chipset, free, hasVulkan);
+        return new DeviceInfo(ram, cores, chipset, free);
     }
 
     /** Klasifikasi tier murni dari angka RAM total (dalam GB). */
