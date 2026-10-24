@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "qwen3-0.6b-q4km",
+      "name": "Qwen3 0.6B",
+      "tier": "LOW",
+      "repo": "unsloth/Qwen3-0.6B-GGUF",
+      "file": "Qwen3-0.6B-Q4_K_M.gguf",
+      "sizeBytes": 396705472,
+      "minRamGb": 3,
+      "quant": "Q4_K_M",
+      "chatTemplate": "chatml",
+      "context": 2048,
+      "description": "Lightest model in the catalog. Good for casual conversation and simple tasks; runs smoothly on 4 GB phones."
+    },
+    {
+      "id": "smollm2-360m-q8",
+      "name": "SmolLM2 360M",
+      "tier": "LOW",
+      "repo": "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
+      "file": "smollm2-360m-instruct-q8_0.gguf",
+      "sizeBytes": 386404992,
+      "minRamGb": 3,
+      "quant": "Q8_0",
+      "chatTemplate": "chatml",
+      "context": 2048,
+      "description": "Tiny 360M-parameter model with high precision. Fastest and battery-friendly, short answers."
+    },
+    {
+      "id": "llama32-1b-q4km",
+      "name": "Llama 3.2 1B",
+      "tier": "LOW",
+      "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+      "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 807694464,
+      "minRamGb": 4,
+      "quant": "Q4_K_M",
+      "chatTemplate": "llama3",
+      "context": 2048,
+      "description": "Popular 1B model from Meta. Smarter than the minis, still light on low-end phones."
+    },
+    {
+      "id": "gemma2-2b-q4km",
+      "name": "Gemma 2 2B",
+      "tier": "MID",
+      "repo": "bartowski/gemma-2-2b-it-GGUF",
+      "file": "gemma-2-2b-it-Q4_K_M.gguf",
+      "sizeBytes": 1708582752,
+      "minRamGb": 6,
+      "quant": "Q4_K_M",
+      "chatTemplate": "gemma",
+      "context": 4096,
+      "description": "Google's 2B model with solid answer quality for its size. Needs around 6 GB RAM."
+    },
+    {
+      "id": "qwen25-3b-q4km",
+      "name": "Qwen2.5 3B",
+      "tier": "MID",
+      "repo": "bartowski/Qwen2.5-3B-Instruct-GGUF",
+      "file": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 1929903264,
+      "minRamGb": 6,
+      "quant": "Q4_K_M",
+      "chatTemplate": "chatml",
+      "context": 4096,
+      "description": "Versatile model from Alibaba. Strong at short writing tasks and general chat."
+    },
+    {
+      "id": "llama32-3b-q4km",
+      "name": "Llama 3.2 3B",
+      "tier": "MID",
+      "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 2019377696,
+      "minRamGb": 6,
+      "quant": "Q4_K_M",
+      "chatTemplate": "llama3",
+      "context": 4096,
+      "description": "Meta's 3B model. Best balance of intelligence and speed on mid-range phones."
+    },
+    {
+      "id": "gemma3-4b-q4km",
+      "name": "Gemma 3 4B",
+      "tier": "HIGH",
+      "repo": "bartowski/google_gemma-3-4b-it-GGUF",
+      "file": "google_gemma-3-4b-it-Q4_K_M.gguf",
+      "sizeBytes": 2489758112,
+      "minRamGb": 8,
+      "quant": "Q4_K_M",
+      "chatTemplate": "gemma",
+      "context": 8192,
+      "description": "Google's latest 4B model with a longer context. Needs 8 GB RAM or more."
+    },
+    {
+      "id": "qwen25-7b-q4km",
+      "name": "Qwen2.5 7B",
+      "tier": "HIGH",
+      "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF",
+      "file": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 4683074240,
+      "minRamGb": 12,
+      "quant": "Q4_K_M",
+      "chatTemplate": "chatml",
+      "context": 8192,
+      "description": "7B model with strong reasoning. Only for high-end phones with 12 GB RAM or more."
+    },
+    {
+      "id": "llama31-8b-q4km",
+      "name": "Llama 3.1 8B",
+      "tier": "HIGH",
+      "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 4920739232,
+      "minRamGb": 12,
+      "quant": "Q4_K_M",
+      "chatTemplate": "llama3",
+      "context": 8192,
+      "description": "Largest model in the catalog. Best quality answers, needs a flagship with 12 GB RAM or more."
+    }
+  ]
+}

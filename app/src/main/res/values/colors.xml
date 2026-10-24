@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Arunika Dark - warna solid, tanpa gradient (DESIGN.md) -->
+    <color name="primary">#5B8DEF</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="primary_container">#1D2C4E</color>
+    <color name="ic_launcher_background">#0C0F14</color>
+    <color name="secondary">#7C8AA5</color>
+    <color name="background">#0C0F14</color>
+    <color name="surface">#131822</color>
+    <color name="surface_variant">#1B2230</color>
+    <color name="outline">#232B3A</color>
+    <color name="text_primary">#EDF1F7</color>
+    <color name="text_secondary">#9AA6B8</color>
+    <color name="text_disabled">#5B6678</color>
+    <color name="success">#34C77B</color>
+    <color name="warning">#E5A13D</color>
+    <color name="error">#E5484D</color>
+    <color name="tier_low">#34C77B</color>
+    <color name="tier_mid">#5B8DEF</color>
+    <color name="tier_high">#A78BFA</color>
+</resources>

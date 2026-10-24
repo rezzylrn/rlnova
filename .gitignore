@@ -1,0 +1,21 @@
+# Build outputs
+*.apk
+*.idsig
+build/
+build-*/
+*.log
+
+# Vendored source (clone separately, see README)
+third_party/
+
+# Signing (build.sh generates a debug key if missing)
+*.keystore
+*.jks
+
+# Internal working briefs
+HERMES_BRIEF_*.md
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
