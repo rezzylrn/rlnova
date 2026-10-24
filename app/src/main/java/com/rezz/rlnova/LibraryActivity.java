@@ -96,38 +96,36 @@ public class LibraryActivity extends Activity implements
         bar.setGravity(Gravity.CENTER);
         bar.setPadding(0, dp(10), 0, dp(8));
 
-        TextView tLib = navItem("Library");
-        TextView tDl = navItem("Downloads");
-        TextView tChat = navItem("Chat");
+        // v1.1.9: ikon saja (tanpa label teks), contentDescription utk aksesibilitas
+        android.widget.ImageView tLib = navItem(R.drawable.ic_book, "Library");
+        android.widget.ImageView tDl = navItem(R.drawable.ic_download, "Downloads");
+        android.widget.ImageView tChat = navItem(R.drawable.ic_chat, "Chat");
         tLib.setOnClickListener(v -> showLibrary());
         tDl.setOnClickListener(v -> showDownloads());
         tChat.setOnClickListener(v -> showChatList());
-        tLib.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        tDl.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        tChat.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        tLib.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1f));
+        tDl.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1f));
+        tChat.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1f));
         bar.addView(tLib);
         bar.addView(tDl);
         bar.addView(tChat);
         return bar;
     }
 
-    private TextView navItem(String label) {
-        TextView t = new TextView(this);
-        t.setText(label);
-        t.setTextSize(12);
-        t.setTextColor(0xFF9AA6B8);
-        t.setGravity(Gravity.CENTER);
+    private android.widget.ImageView navItem(int iconRes, String desc) {
+        android.widget.ImageView t = new android.widget.ImageView(this);
+        t.setImageResource(iconRes);
+        t.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        t.setContentDescription(desc);
         return t;
     }
 
     private void highlightNav(int activeIndex) {
+        int[] icons = {R.drawable.ic_book, R.drawable.ic_download, R.drawable.ic_chat};
+        int[] active = {R.drawable.ic_book_active, R.drawable.ic_download_active, R.drawable.ic_chat_active};
         for (int i = 0; i < nav.getChildCount(); i++) {
-            TextView t = (TextView) nav.getChildAt(i);
-            t.setTextColor(i == activeIndex ? 0xFF5B8DEF : 0xFF9AA6B8);
-            t.setTypeface(i == activeIndex ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            android.widget.ImageView t = (android.widget.ImageView) nav.getChildAt(i);
+            t.setImageResource(i == activeIndex ? active[i] : icons[i]);
         }
     }
 

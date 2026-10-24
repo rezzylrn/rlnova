@@ -18,6 +18,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -126,8 +127,8 @@ public class ChatRoomFragment extends Fragment {
 
     private TextView toolbarTitle;      // Fitur A: tappable model name
     private EditText input;
-    private TextView sendBtn;
-    private TextView micBtn;            // v1.1.7: tombol mic (STT on-device)
+    private android.widget.ImageButton sendBtn; // v1.1.9: ikon, bukan tulisan
+    private android.widget.ImageButton micBtn;  // v1.1.7: tombol mic (STT on-device)
     private TextView streamingBubble;   // kartu AI yang sedang di-stream
     private TextView thinkingHeader;    // header collapsible "Thinking"
     private TextView thinkingBody;      // isi think (collapse/expand)
@@ -299,13 +300,13 @@ public class ChatRoomFragment extends Fragment {
         footerStats.setText("0 tokens · 0.0 tok/s");
         footer.addView(footerStats, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        TextView stopBtn = new TextView(ctx);
-        stopBtn.setText("Stop");
-        stopBtn.setTextSize(14);
-        stopBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        stopBtn.setTextColor(0xFFFFFFFF);
+        // v1.1.9: tombol stop jadi ikon kotak (bukan tulisan)
+        android.widget.ImageButton stopBtn = new android.widget.ImageButton(ctx);
+        stopBtn.setImageResource(R.drawable.ic_stop);
+        stopBtn.setScaleType(ImageView.ScaleType.CENTER);
+        stopBtn.setContentDescription("Stop generating");
         stopBtn.setBackgroundResource(R.drawable.bg_button_primary);
-        stopBtn.setPadding(dp(16), dp(8), dp(16), dp(8));
+        stopBtn.setPadding(dp(12), dp(12), dp(12), dp(12));
         stopBtn.setOnClickListener(v -> stopGeneration());
         footer.addView(stopBtn, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -341,26 +342,24 @@ public class ChatRoomFragment extends Fragment {
         ilp.rightMargin = dp(8);
         composer.addView(input, ilp);
 
-        // ---- v1.1.7: tombol mic (STT on-device) di kiri tombol Send ----
-        micBtn = new TextView(ctx);
-        micBtn.setText("Mic");
-        micBtn.setTextSize(13);
-        micBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        micBtn.setTextColor(0xFFEDF1F7);
-        micBtn.setGravity(Gravity.CENTER);
+        // v1.1.9: ImageButton ikon — bukan tulisan. Tint putih agar kontras di atas bg pill.
+        micBtn = new android.widget.ImageButton(ctx);
+        micBtn.setImageResource(R.drawable.ic_mic);
+        micBtn.setScaleType(ImageView.ScaleType.CENTER);
         micBtn.setBackgroundResource(R.drawable.bg_composer);
+        micBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+        micBtn.setContentDescription("Voice input");
         micBtn.setOnClickListener(v -> onMicClicked());
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(48), dp(48));
         mlp.rightMargin = dp(8);
         composer.addView(micBtn, mlp);
 
-        sendBtn = new TextView(ctx);
-        sendBtn.setText("Send");
-        sendBtn.setTextSize(14);
-        sendBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        sendBtn.setTextColor(0xFFFFFFFF);
-        sendBtn.setGravity(Gravity.CENTER);
+        sendBtn = new android.widget.ImageButton(ctx);
+        sendBtn.setImageResource(R.drawable.ic_send);
+        sendBtn.setScaleType(ImageView.ScaleType.CENTER);
         sendBtn.setBackgroundResource(R.drawable.bg_button_primary);
+        sendBtn.setPadding(dp(12), dp(12), dp(12), dp(12));
+        sendBtn.setContentDescription("Send message");
         sendBtn.setOnClickListener(v -> onSendClicked());
         composer.addView(sendBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
@@ -450,15 +449,11 @@ public class ChatRoomFragment extends Fragment {
             if (m.role == ChatDatabase.ROLE_USER) {
                 addBubbleUser(m.content); // Fitur C: long-press copy tersangkut di sini
             } else if (m.role == ChatDatabase.ROLE_ASSISTANT) {
-                addCardAiParsed(m.content); // parse think block juga di history
+                addCardAiParsed(m.content, m.modelId); // parse think block juga di history
                 if (m.tokens != null && m.tokPerSec != null) {
                     TextView st = addStatsRow();
-                    // Fitur B: atribusi model asal pesan (null → format lama)
-                    String name = m.modelId == null ? null
-                            : ModelCatalog.displayNameFor(((Host) getActivity()).allModels(), m.modelId);
-                    st.setText(name != null
-                            ? name + " · " + m.tokens + " tokens · " + fmt1(m.tokPerSec) + " tok/s"
-                            : m.tokens + " tokens · " + fmt1(m.tokPerSec) + " tok/s");
+                    // v1.1.9: hanya "N tokens · X tok/s" — nama model pindah ke label atas kartu.
+                    st.setText(m.tokens + " tokens · " + fmt1(m.tokPerSec) + " tok/s");
                 }
             }
         }
@@ -738,11 +733,11 @@ public class ChatRoomFragment extends Fragment {
     }
 
     /** Kartu AI final (dipakai finishGeneration & loadHistory): parse think → header collapsible + answer. */
-    private void addCardAiParsed(String rawContent) {
+    private void addCardAiParsed(String rawContent, String modelId) {
         if (!isAdded() || messagesView == null) return;
         ThinkSplit.Result r = ThinkSplit.parse(rawText(rawContent));
         if (!r.hasThink) {
-            addCardAi(r.answer);
+            addCardAi(r.answer, modelId);
             return;
         }
         final View section = buildThinkSection(r.thinking, false);
@@ -753,7 +748,7 @@ public class ChatRoomFragment extends Fragment {
         slp.topMargin = dp(8);
         messagesView.addView(section, slp);
         if (!r.answer.trim().isEmpty()) {
-            addCardAi(r.answer);
+            addCardAi(r.answer, modelId);
         } else {
             // BUG2 fallback: generation berakhir dengan think-only → tampilkan catatan + Retry.
             TextView note = new TextView(getActivity());
@@ -938,8 +933,30 @@ public class ChatRoomFragment extends Fragment {
         messagesView.addView(b, lp);
     }
 
-    private void addCardAi(String content) {
+    private void addCardAi(String content, String modelId) {
         Context c = getActivity();
+        // v1.1.9: baris vertikal = label model (di atas) + kartu + action row (di bawah)
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.START;
+        lp.rightMargin = dp(48);
+        lp.topMargin = dp(8);
+        messagesView.addView(row, lp);
+
+        // Label nama model asal pesan (DI ATAS kartu, teks secondary ~12sp).
+        String modelName = resolveModelName(modelId);
+        if (modelName != null) {
+            TextView label = new TextView(c);
+            label.setText(modelName);
+            label.setTextSize(12);
+            label.setTextColor(0xFF8A94A8);
+            label.setPadding(dp(4), 0, dp(4), dp(2));
+            row.addView(label, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+
         TextView card = new TextView(getActivity());
         card.setText(content);
         card.setTextSize(14);
@@ -952,29 +969,53 @@ public class ChatRoomFragment extends Fragment {
             copyToClipboard(content);
             return true;
         });
-        // v1.1.8: tombol speaker kecil di bawah kartu jawaban
-        TextView speak = new TextView(c);
-        speak.setText("Speak");
-        speak.setTextSize(12);
-        speak.setTypeface(Typeface.DEFAULT_BOLD);
-        speak.setTextColor(0xFF5B8DEF);
-        speak.setPadding(dp(4), dp(2), dp(4), dp(2));
-        speak.setMinHeight(dp(32));
-        speak.setGravity(Gravity.CENTER_VERTICAL);
-        speak.setOnClickListener(v -> onSpeakClicked(speak, content));
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        slp.topMargin = dp(2);
-        LinearLayout row = new LinearLayout(c);
-        row.setOrientation(LinearLayout.VERTICAL);
         row.addView(card);
-        row.addView(speak, slp);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+
+        // v1.1.9: action row ikon di bawah kartu final — speaker (TTS) + copy.
+        LinearLayout actions = new LinearLayout(c);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        android.widget.ImageButton speak = new android.widget.ImageButton(c);
+        speak.setImageResource(R.drawable.ic_speaker);
+        speak.setScaleType(ImageView.ScaleType.CENTER);
+        speak.setBackgroundResource(android.R.color.transparent);
+        speak.setColorFilter(0xFF9AA6B8);
+        speak.setPadding(dp(4), dp(4), dp(4), dp(4));
+        speak.setMinimumWidth(dp(32));
+        speak.setMinimumHeight(dp(32));
+        speak.setContentDescription("Read answer aloud");
+        speak.setOnClickListener(v -> onSpeakClicked(speak, content));
+        actions.addView(speak, new LinearLayout.LayoutParams(dp(32), dp(32)));
+
+        android.widget.ImageButton copy = new android.widget.ImageButton(c);
+        copy.setImageResource(R.drawable.ic_copy);
+        copy.setScaleType(ImageView.ScaleType.CENTER);
+        copy.setBackgroundResource(android.R.color.transparent);
+        copy.setColorFilter(0xFF9AA6B8);
+        copy.setPadding(dp(4), dp(4), dp(4), dp(4));
+        copy.setMinimumWidth(dp(32));
+        copy.setMinimumHeight(dp(32));
+        copy.setContentDescription("Copy answer");
+        copy.setOnClickListener(v -> copyToClipboard(content));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(dp(32), dp(32));
+        clp.leftMargin = dp(8);
+        actions.addView(copy, clp);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.gravity = Gravity.START;
-        lp.rightMargin = dp(48);
-        lp.topMargin = dp(8);
-        messagesView.addView(row, lp);
+        alp.topMargin = dp(2);
+        row.addView(actions, alp);
+    }
+
+    /** v1.1.9: nama tampilan model untuk label di atas kartu (null = sembunyikan label, bukan "null"). */
+    private String resolveModelName(String modelId) {
+        if (!isAdded()) return null;
+        String name = null;
+        if (modelId != null) {
+            name = ModelCatalog.displayNameFor(
+                    ((Host) getActivity()).allModels(), modelId);
+        }
+        if (name == null && model != null) name = model.name; // fallback nama model aktif
+        return (name == null || "null".equals(name)) ? null : name;
     }
 
     private TextView addStatsRow() {
@@ -1103,8 +1144,9 @@ public class ChatRoomFragment extends Fragment {
         }
         recorder.startRecording();
         recording = true;
-        micBtn.setText("Stop");
-        micBtn.setTextColor(0xFFE5484D);
+        micBtn.setImageResource(R.drawable.ic_stop);
+        micBtn.setColorFilter(0xFFE5484D);
+        micBtn.setContentDescription("Stop recording and transcribe");
         toast("Recording… tap Stop to transcribe");
 
         recordThread = new Thread(() -> {
@@ -1172,15 +1214,17 @@ public class ChatRoomFragment extends Fragment {
             pcmFinal = pcm;
         }
         resetMicButton();
-        micBtn.setText("…");
+        micBtn.setImageResource(R.drawable.ic_stop); // indikator kerja: kotak + warna netral abu
+        micBtn.setColorFilter(0xFF9AA6B8);
         toast("Transcribing…");
         transcribeInBackground(pcmFinal);
     }
 
     private void resetMicButton() {
         if (micBtn != null) {
-            micBtn.setText("Mic");
-            micBtn.setTextColor(0xFFEDF1F7);
+            micBtn.setImageResource(R.drawable.ic_mic);
+            micBtn.setColorFilter(0xFFFFFFFF);
+            micBtn.setContentDescription("Voice input");
         }
     }
 
@@ -1199,7 +1243,20 @@ public class ChatRoomFragment extends Fragment {
                 return;
             }
             if (!whisperEngine.init(modelPath)) {
-                ui.post(() -> { toast("Could not load the voice model"); resetMicButton(); });
+                // v1.1.9: diagnosa jelas — tampilkan ukuran file aktual vs ekspektasi
+                // supaya ketahuan apakah file model belum lengkap / korup.
+                long actual = 0;
+                try {
+                    java.io.File f = VoiceCatalog.localFile(getActivity(), VoiceCatalog.WHISPER_TINY_ID);
+                    actual = f.exists() ? f.length() : -1;
+                } catch (Exception ignored) { }
+                long expected = VoiceCatalog.WHISPER_TINY_SIZE_BYTES;
+                String diag = actual < 0 ? " (file missing)"
+                        : " (file " + actual + " bytes, expected " + expected + ")";
+                ui.post(() -> {
+                    toast("Could not load the voice model" + diag);
+                    resetMicButton();
+                });
                 return;
             }
             whisperEngine.transcribeAsync(pcm, nSamples, result -> ui.post(() -> {
@@ -1234,7 +1291,7 @@ public class ChatRoomFragment extends Fragment {
      * dalam satu waktu — tap saat bicara = berhenti. Sintesis + playback
      * jalan di worker thread (blocking), update UI via Handler.
      */
-    private void onSpeakClicked(final TextView btn, final String text) {
+    private void onSpeakClicked(final android.widget.ImageButton btn, final String text) {
         if (speaking) { stopSpeaking(); return; }
         if (ttsWorker != null && ttsWorker.isAlive()) return; // sintesis lain jalan
         android.app.Activity act = getActivity();
@@ -1260,8 +1317,9 @@ public class ChatRoomFragment extends Fragment {
         }
 
         speaking = true;
-        btn.setText("Stop");
-        btn.setTextColor(0xFFE5484D);
+        btn.setImageResource(R.drawable.ic_stop);
+        btn.setColorFilter(0xFFE5484D);
+        btn.setContentDescription("Stop reading");
         final android.app.Activity activity = act;
         ttsWorker = new Thread(() -> {
             try {
@@ -1308,10 +1366,11 @@ public class ChatRoomFragment extends Fragment {
         new Thread(() -> ttsEngine.free(), "rlnova-tts-free").start();
     }
 
-    private void resetSpeakButton(TextView btn) {
+    private void resetSpeakButton(android.widget.ImageButton btn) {
         if (btn != null) {
-            btn.setText("Speak");
-            btn.setTextColor(0xFF5B8DEF);
+            btn.setImageResource(R.drawable.ic_speaker);
+            btn.setColorFilter(0xFF9AA6B8);
+            btn.setContentDescription("Read answer aloud");
         }
     }
 
