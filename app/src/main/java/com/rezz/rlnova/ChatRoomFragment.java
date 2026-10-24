@@ -29,18 +29,17 @@ import java.util.Locale;
 /**
  * ChatRoomFragment (mockup 03, chat room page).
  *
- * Threading: loadLibrary/init/generate run on a background thread (single-
- * thread executor); native callbacks -> UI Handler for rendering; stop() is
- * called straight from the UI thread (atomic flag in native, latency <= 1
- * decode iteration).
+ * v1.1.3: fragment TIDAK lagi memiliki/menjalankan engine — generation
+ * dimiliki GenerationService (foreground service). Fragment hanya:
+ *   - memanggil GenerationService.start(...) dari tombol Send/Retry,
+ *   - subscribe GenerationState (listener) untuk streaming UI live,
+ *   - saat generation selesai, render ulang pesan final dari DB
+ *     (insert pesan assistant dilakukan SERVICE, bukan fragment),
+ *   - tombol Stop memanggil GenerationService.requestStop().
  *
- * v1.1.2:
- *   - Fitur A: model selector di toolbar (bottom sheet; switch in-place via
- *     ENGINE_LOCK, rollback ke model lama kalau init gagal, unduh langsung
- *     dari sheet dengan progres live via DownloadState).
- *   - Fitur B: atribusi model per pesan (messages.model_id; baris statistik
- *     kartu AI menampilkan nama model ASAL pesan).
- *   - Fitur C: long-press bubble user / kartu AI menyalin teks ke clipboard.
+ * Tetap dipertahankan: think collapsible (ThinkSplit), stats
+ * "NamaModel · N tokens · X tok/s", long-press copy (jawaban), selector
+ * model, Retry tanpa duplikasi pesan user, satu generation dalam satu waktu.
  */
 public class ChatRoomFragment extends Fragment {
 
@@ -57,29 +56,15 @@ public class ChatRoomFragment extends Fragment {
         void startDownloadFromChat(ModelCatalog.Model m);
     }
 
-    // Satu model termuat per proses — dipakai lintas percakapan.
-    private static LlamaEngine sharedEngine;
-    private static String sharedEngineModelId;
-    private static long sharedEngineConfigEpoch = -1; // berubah saat prefs disimpan → paksa reload
-    private static int sharedEngineInitCtx = 2048;    // ctx yang dipakai saat init engine aktif
-    private static final Object ENGINE_LOCK = new Object();
-
     /** Epoch config: naik tiap kali pengaturan performa disimpan (PerfPrefs.save). */
     public static long perfEpoch() {
         return PerfPrefs.saveEpochValue();
     }
 
-    /** Engine aktif (untuk benchmark dari panel Optimasi). Null = belum dimuat. */
+    /** Engine aktif = milik GenerationService (dipakai benchmark panel Optimasi). */
     public static LlamaEngine sharedEngine() {
-        return sharedEngine;
+        return GenerationService.sharedEngine();
     }
-
-    private static final java.util.concurrent.ExecutorService EXECUTOR =
-            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
-                Thread t = new Thread(r, "rlnova-engine");
-                t.setPriority(Thread.NORM_PRIORITY - 1);
-                return t;
-            });
 
     private long convId = -1;
     private ChatDatabase.Conversation conv;
@@ -90,7 +75,53 @@ public class ChatRoomFragment extends Fragment {
     private LinearLayout footer;
     private TextView footerStats;
     private TextView statusDotLabel;
-    private View statusDot;
+    private View statusDot; // assigned in onCreateView
+
+    /** Ukuran ekspektasi katalog (bila diketahui); 0 = tidak diketahui. */
+    private long modelSizeBytesExpect() {
+        if (model == null) return 0;
+        if (model.sizeBytes > 0) return model.sizeBytes;
+        DownloadState st = DownloadState.get(model.id);
+        return st != null && st.total > 0 ? st.total : 0;
+    }
+
+    /**
+     * Model aktif siap dipakai: file .gguf ada di ModelCatalog.localFileById
+     * dan ukurannya cocok dengan ekspektasi katalog (bila diketahui).
+     * File tidak ada, atau hanya .part tanpa .gguf, atau ukuran tidak cocok
+     * → false (dot Offline).
+     */
+    private boolean modelReadyOnDisk() {
+        if (!isAdded() || model == null) return false;
+        Context c = getActivity();
+        long expect = modelSizeBytesExpect();
+        java.io.File f = ModelCatalog.localFileById(c, model.id);
+        if (f.exists()) {
+            return expect <= 0 || f.length() == expect;
+        }
+        return false; // hanya .part tanpa .gguf juga jatuh ke sini
+    }
+
+    /** Hitung ulang dot Online/Offline toolbar dari kondisi nyata model aktif. */
+    private void refreshStatusDot() {
+        if (!isAdded() || statusDot == null || statusDotLabel == null) return;
+        if (conv == null) { // v1.1.3: percakapan sudah dihapus — tampilkan Offline
+            statusDotLabel.setText("Offline");
+            statusDotLabel.setTextColor(0xFF8A94A8);
+            android.graphics.drawable.GradientDrawable bgn =
+                    (android.graphics.drawable.GradientDrawable) statusDot.getBackground();
+            if (bgn != null) bgn.setColor(0xFF8A94A8);
+            return;
+        }
+        boolean ok = (modelReadyOnDisk() || generating)
+                && !GenerationState.get().lastInitFailed;
+        statusDotLabel.setText(ok ? "Online" : "Offline");
+        statusDotLabel.setTextColor(ok ? 0xFF34C77B : 0xFF8A94A8);
+        android.graphics.drawable.GradientDrawable bg =
+                (android.graphics.drawable.GradientDrawable) statusDot.getBackground();
+        if (bg != null) bg.setColor(ok ? 0xFF34C77B : 0xFF8A94A8);
+    }
+
     private TextView toolbarTitle;      // Fitur A: tappable model name
     private EditText input;
     private TextView sendBtn;
@@ -99,13 +130,28 @@ public class ChatRoomFragment extends Fragment {
     private TextView thinkingBody;      // isi think (collapse/expand)
     private View thinkingSection;       // container header+body
     private boolean thinkingExpanded = false;
-    private final StringBuilder streamingText = new StringBuilder(); // RAW (dengan tag think)
 
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private volatile boolean generating = false;
+    private volatile boolean generating = false;     // mirror GenerationState utk UI guard
     private volatile boolean switchingModel = false; // Fitur A: satu switch pada satu waktu
-    private int nGeneratedLive = 0;
-    private long genStartMs = 0;
+
+    /** Poll DownloadState.uiVersion: recomputed dot saat download selesai/gagal. */
+    private long lastDlVersion = -1;
+    private final Runnable statusPoll = new Runnable() {
+        @Override public void run() {
+            if (!isAdded()) return;
+            long v = DownloadState.uiVersion();
+            if (v != lastDlVersion) {
+                lastDlVersion = v;
+                refreshStatusDot();
+            }
+            ui.postDelayed(this, 1000);
+        }
+    };
+
+    /** Listener GenerationState — token/done datang dari worker thread service. */
+    private final GenerationState.UpdateListener stateListener =
+            () -> ui.post(() -> { if (isAdded()) onGenerationUpdate(); });
 
     // ---- Fitur A: bottom sheet pilihan model
     private Dialog modelSheet;
@@ -188,23 +234,24 @@ public class ChatRoomFragment extends Fragment {
         toolbar.addView(titleWrap, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        // status: green dot + "Offline — on this device"
+        // status: dot + label dihitung dinamis (refreshStatusDot)
         LinearLayout status = new LinearLayout(ctx);
         status.setOrientation(LinearLayout.HORIZONTAL);
         status.setGravity(Gravity.CENTER_VERTICAL);
         View dot = new View(ctx);
         android.graphics.drawable.GradientDrawable dotBg = new android.graphics.drawable.GradientDrawable();
         dotBg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        dotBg.setColor(0xFF34C77B);
+        dotBg.setColor(0xFF8A94A8); // di-set ulang oleh refreshStatusDot()
         LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(8), dp(8));
         dotLp.rightMargin = dp(6);
         dot.setLayoutParams(dotLp);
         dot.setBackground(dotBg);
+        statusDot = dot;
         status.addView(dot);
         statusDotLabel = new TextView(ctx);
-        statusDotLabel.setText("Offline — on this device");
+        statusDotLabel.setText("Offline");
         statusDotLabel.setTextSize(12);
-        statusDotLabel.setTextColor(0xFF34C77B);
+        statusDotLabel.setTextColor(0xFF8A94A8);
         status.addView(statusDotLabel);
         toolbar.addView(status, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -296,14 +343,66 @@ public class ChatRoomFragment extends Fragment {
         root.addView(composer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        // v1.1.3: conv null = percakapan sudah dihapus dari list menu ⋮.
+        // Nonaktifkan kirim, jangan crash, jangan insert ke conversation hilang.
+        if (conv == null) {
+            sendBtn.setEnabled(false);
+            sendBtn.setAlpha(0.4f);
+            input.setEnabled(false);
+            input.setHint("Conversation deleted");
+            TextView note = new TextView(ctx);
+            note.setText("This conversation no longer exists.");
+            note.setTextSize(13);
+            note.setTextColor(0xFFE5484D);
+            note.setPadding(dp(16), dp(12), dp(16), dp(8));
+            messagesView.addView(note);
+            toolbarTitle.setText("Rlnova");
+            return root;
+        }
+
         loadHistory();
+        refreshStatusDot();
         return root;
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        // Subscribe dulu, baru cek apakah percakapan ini sedang digenerate
+        // oleh service (re-attach: kembali dari back / dibuka dari notifikasi).
+        GenerationState.get().addListener(stateListener);
+        refreshStatusDot(); // masuk chat: hitung ulang status model aktif
+        lastDlVersion = -1; // paksa recompute di tick poll pertama
+        ui.removeCallbacks(statusPoll);
+        ui.post(statusPoll);
+        if (GenerationState.get().isGeneratingFor(convId)) {
+            generating = true;
+            footer.setVisibility(View.VISIBLE);
+            sendBtn.setEnabled(false);
+            sendBtn.setAlpha(0.4f);
+            // header Thinking + kartu streaming dari state.raw yang terkumpul
+            if (streamingBubble == null) insertStreamingCard();
+            renderStreamingState();
+            footerStats.setText(GenerationState.get().nTokens + " tokens · "
+                    + fmt1(GenerationState.get().liveTokPerSec()) + " tok/s");
+        } else if (!generating) {
+            footer.setVisibility(View.GONE);
+            sendBtn.setEnabled(true);
+            sendBtn.setAlpha(1f);
+        }
+    }
+
+    @Override
+    public void onPause() {
+        ui.removeCallbacks(statusPoll);
+        GenerationState.get().removeListener(stateListener);
+        super.onPause();
     }
 
     // ================================================================ riwayat
 
     private void loadHistory() {
-        if (!isAdded() || conv == null) return;
+        if (!isAdded() || conv == null) return; // v1.1.3: conv dihapus → tidak render
         List<ChatDatabase.Message> ms = ChatDatabase.get(getActivity()).getMessages(convId);
         for (ChatDatabase.Message m : ms) {
             if (m.role == ChatDatabase.ROLE_USER) {
@@ -327,7 +426,8 @@ public class ChatRoomFragment extends Fragment {
     // ================================================================ kirim
 
     private void onSendClicked() {
-        if (generating || switchingModel) return;
+        if (conv == null) return; // v1.1.3: percakapan sudah dihapus — jangan insert
+        if (GenerationService.isBusy() || switchingModel) return;
         String text = input.getText() == null ? "" : input.getText().toString().trim();
         if (text.isEmpty()) return;
         input.setText("");
@@ -337,10 +437,13 @@ public class ChatRoomFragment extends Fragment {
             ChatDatabase.get(getActivity()).renameConversation(convId, text);
             ((Host) getActivity()).onConversationListChanged();
         }
-        startGeneration(text);
+        GenerationService.start(getActivity(), convId, text, false, model,
+                conv != null ? conv.systemPrompt : null);
+        enterGeneratingUi();
     }
 
     private void deleteLastUserMessage() {
+        if (conv == null) return; // v1.1.3: conv dihapus — tidak ada yang perlu dibuang
         List<ChatDatabase.Message> ms = ChatDatabase.get(getActivity()).getMessages(convId);
         if (!ms.isEmpty() && ms.get(ms.size() - 1).role == ChatDatabase.ROLE_USER) {
             ChatDatabase.get(getActivity()).deleteMessage(ms.get(ms.size() - 1).id);
@@ -348,7 +451,7 @@ public class ChatRoomFragment extends Fragment {
     }
 
     private void stopGeneration() {
-        if (sharedEngine != null) sharedEngine.stop();
+        GenerationService.requestStop();
     }
 
     private void close() {
@@ -356,73 +459,43 @@ public class ChatRoomFragment extends Fragment {
         ((Host) getActivity()).onChatClosed();
     }
 
+    /** UI masuk mode generating (footer live + Send terkunci). */
+    private void enterGeneratingUi() {
+        GenerationState st = GenerationState.get();
+        generating = true;
+        thinkingExpanded = false;
+        footer.setVisibility(View.VISIBLE);
+        footerStats.setText("0 tokens · 0.0 tok/s");
+        sendBtn.setEnabled(false);
+        sendBtn.setAlpha(0.4f);
+        // kartu streaming muncul segera (caret blink sebelum token pertama)
+        if (streamingBubble == null) insertStreamingCard();
+        renderStreamingState();
+    }
+
     // ===================================================== Fitur A: switch
 
-    /** Ganti model percakapan yang sedang dibuka (Fitur A). Jalur UI thread. */
+    /**
+     * Ganti model percakapan yang sedang dibuka (Fitur A). Jalur UI thread.
+     * v1.1.3: init engine didelegasikan ke GenerationService — cukup tolak
+     * switch saat generation berjalan; pembaruan engine terjadi otomatis di
+     * service pada generation berikutnya (model beda/epoch naik → reload).
+     */
     private void switchModelTo(ModelCatalog.Model target) {
+        if (conv == null) return; // v1.1.3: percakapan sudah dihapus
         if (switchingModel) return;
-        final ModelCatalog.Model prev = model;
+        if (GenerationService.isBusy()) {
+            toast("Wait for the current generation to finish");
+            return;
+        }
         switchingModel = true;
         ChatDatabase.get(getActivity()).setConversationModel(convId, target.id);
         conv = ((Host) getActivity()).getConversation(convId);
         model = target;
         toolbarTitle.setText(target.name);
-
-        EXECUTOR.execute(() -> {
-            boolean ok = false;
-            String err = null;
-            try {
-                LlamaEngine.loadLibrary();
-                synchronized (ENGINE_LOCK) {
-                    // Bebaskan engine lama jika modelnya beda (RAM benar2 kembali)
-                    if (sharedEngine != null && !target.id.equals(sharedEngineModelId)) {
-                        sharedEngine.free();
-                        sharedEngine = null;
-                        sharedEngineModelId = null;
-                    }
-                    if (sharedEngine == null) {
-                        DeviceInfo dev = ((Host) getActivity()).deviceInfo();
-                        PerfPrefs.Perf perf = PerfPrefs.load(getActivity(), dev);
-                        int ctx = Math.min(perf.nCtx > 0 ? perf.nCtx : contextPerTier(dev, target.context),
-                                target.context > 0 ? target.context : Integer.MAX_VALUE);
-                        if (ctx < 256) ctx = 256;
-                        LlamaEngine e = new LlamaEngine();
-                        java.io.File f = new java.io.File(getActivity().getFilesDir(),
-                                "models/" + target.id + ".gguf");
-                        ok = f.exists() && e.init(f.getAbsolutePath(), ctx,
-                                perf.effectiveThreads(dev != null ? dev.cpuCores : 4), perf);
-                        if (ok) {
-                            sharedEngine = e;
-                            sharedEngineModelId = target.id;
-                            sharedEngineConfigEpoch = perfEpoch();
-                            sharedEngineInitCtx = ctx;
-                        }
-                    } else {
-                        ok = true; // engine sudah memuat model target
-                    }
-                }
-            } catch (Throwable t) {
-                err = String.valueOf(t.getMessage());
-            }
-            final boolean okF = ok;
-            final String errF = err;
-            ui.post(() -> {
-                if (!isAdded()) return;
-                switchingModel = false;
-                if (okF) {
-                    toast("Switched to " + target.name);
-                } else {
-                    // Rollback: kembalikan toolbar + modelId DB ke model sebelumnya
-                    // agar percakapan tidak nyangkut di model yang gagal load.
-                    ChatDatabase.get(getActivity()).setConversationModel(convId, prev.id);
-                    conv = ((Host) getActivity()).getConversation(convId);
-                    model = prev;
-                    toolbarTitle.setText(prev.name);
-                    onGenerationFailed("Model failed to load"
-                            + (errF != null ? " (" + errF + ")" : ""));
-                }
-            });
-        });
+        refreshStatusDot(); // status mengikuti model yang baru aktif
+        switchingModel = false;
+        toast("Switched to " + target.name);
     }
 
     // ============================================== Fitur A: bottom sheet
@@ -436,31 +509,38 @@ public class ChatRoomFragment extends Fragment {
         LinearLayout panel = new LinearLayout(c);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setBackgroundColor(0xFF131822);
+        panel.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        // Tinggi sheet maksimum ~70% layar — bukan fixed 420dp.
+        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.7);
 
         TextView head = new TextView(c);
         head.setText("Switch model");
         head.setTextSize(16);
         head.setTypeface(Typeface.DEFAULT_BOLD);
         head.setTextColor(0xFFEDF1F7);
-        int hp = dp(16);
-        head.setPadding(hp, dp(16), hp, dp(8));
+        head.setPadding(0, 0, 0, dp(8));
+        head.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         panel.addView(head);
 
         ScrollView scroll = new ScrollView(c);
+        scroll.setFillViewport(false);
         sheetList = new LinearLayout(c);
         sheetList.setOrientation(LinearLayout.VERTICAL);
-        sheetList.setPadding(dp(8), 0, dp(8), dp(16));
-        scroll.addView(sheetList);
+        sheetList.setPadding(0, 0, 0, 0);
+        scroll.addView(sheetList, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         panel.addView(scroll, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         modelSheet.setContentView(panel, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(420)));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         Window w = modelSheet.getWindow();
         if (w != null) {
-            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, dp(420));
+            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, maxH);
             w.setGravity(Gravity.BOTTOM);
-            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x00000000));
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xFF131822));
         }
 
         sheetRows.clear();
@@ -496,123 +576,52 @@ public class ChatRoomFragment extends Fragment {
 
     // ============================================================ generation
 
-    private void startGeneration(final String userText) {
-        startGeneration(userText, false);
-    }
-
-    /** Retry (BUG2 fallback): generate ulang TANPA menambah bubble/row user baru. */
-    private void startGeneration(final String userText, final boolean retry) {
-        final Host host = (Host) getActivity();
-        final ModelCatalog.Model m = model;
-        if (m == null) {
-            toast("Model not found");
-            return;
+    /**
+     * Jantung wiring v1.1.3: dipanggil di UI thread setiap GenerationState
+     * berubah (per-token, selesai, gagal). Fragment hanya MIRROR state —
+     * generation, engine, dan insert pesan final semua di GenerationService.
+     */
+    private void onGenerationUpdate() {
+        GenerationState st = GenerationState.get();
+        // Generation milik percakapan lain → abaikan di room ini.
+        if (st.generating && st.convId != convId) return;
+        if (st.generating) {
+            if (!generating) enterGeneratingUi();
+            if (st.nTokens > 0) stopThinkingDots(); // token pertama: stop caret blink
+            renderStreamingState();
+            footerStats.setText(st.nTokens + " tokens · "
+                    + fmt1(st.liveTokPerSec()) + " tok/s");
+            scrollToBottom();
+        } else if (generating) {
+            // Transisi generating → selesai. Pesan final SUDAH diinsert oleh
+            // service — fragment render ulang dari DB lewat loadHistory().
+            generating = false;
+            removeStreamingCard();
+            if (st.error != null) {
+                if (st.lastInitFailed) deleteLastUserMessage();
+                refreshStatusDot(); // init gagal → dot Offline segera
+                onGenerationFailed(st.error);
+            } else if (st.stopReason < 0) {
+                onGenerationFailed("Generation failed");
+            } else {
+                refreshStatusDot(); // generation sukses → engine hidup, dot Online
+                finishGeneration();
+            }
         }
-        generating = true;
-        genStartMs = System.currentTimeMillis();
-        nGeneratedLive = 0;
-        streamingText.setLength(0);
-        thinkingExpanded = false;
-        footer.setVisibility(View.VISIBLE);
-        footerStats.setText("0 tokens · 0.0 tok/s");
-        sendBtn.setEnabled(false);
-        sendBtn.setAlpha(0.4f);
-
-        EXECUTOR.execute(() -> {
-            // --- 1. pastikan library termuat & model siap (blocking di sini saja)
-            try {
-                LlamaEngine.loadLibrary();
-            } catch (Throwable t) {
-                ui.post(() -> onGenerationFailed("Failed to load native library: " + t.getMessage()));
-                return;
-            }
-            synchronized (ENGINE_LOCK) {
-                // Model berubah ATAU config berubah (epoch naik): bebaskan yang
-                // lama dulu sebelum init ulang, supaya RAM-nya benar-benar kembali.
-                if (sharedEngine != null && (!m.id.equals(sharedEngineModelId)
-                        || sharedEngineConfigEpoch != perfEpoch())) {
-                    sharedEngine.free();
-                    sharedEngine = null;
-                    sharedEngineModelId = null;
-                }
-                if (sharedEngine == null) {
-                    DeviceInfo dev = host.deviceInfo();
-                    PerfPrefs.Perf perf = PerfPrefs.load(getActivity(), dev);
-                    int ctx = Math.min(perf.nCtx > 0 ? perf.nCtx : contextPerTier(dev, m.context),
-                            m.context > 0 ? m.context : Integer.MAX_VALUE);
-                    if (ctx < 256) ctx = 256;
-                    LlamaEngine e = new LlamaEngine();
-                    java.io.File f = new java.io.File(getActivity().getFilesDir(), "models/" + m.id + ".gguf");
-                    boolean ok = f.exists() && e.init(f.getAbsolutePath(), ctx,
-                            perf.effectiveThreads(dev != null ? dev.cpuCores : 4), perf);
-                    if (!ok) {
-                        ui.post(() -> onGenerationFailed(
-                                "Failed to load model (not enough RAM or corrupt file)"));
-                        return;
-                    }
-                    sharedEngine = e;
-                    sharedEngineModelId = m.id;
-                    sharedEngineConfigEpoch = perfEpoch();
-                    sharedEngineInitCtx = ctx;
-                }
-            }
-            // --- 2. build the prompt from history (drop the just-saved user message)
-            android.content.Context appCtx = getActivity().getApplicationContext();
-            List<ChatDatabase.Message> history =
-                    ChatDatabase.get(appCtx).getMessages(convId);
-            if (!history.isEmpty()
-                    && history.get(history.size() - 1).role == ChatDatabase.ROLE_USER) {
-                history = history.subList(0, history.size() - 1);
-            }
-            if (retry) {
-                // Retry: buang juga assistant row lama yang think-only supaya
-                // tidak menumpuk pesan kosong di riwayat & prompt.
-                while (!history.isEmpty()
-                        && history.get(history.size() - 1).role == ChatDatabase.ROLE_ASSISTANT) {
-                    ChatDatabase.get(appCtx).deleteMessage(
-                            history.get(history.size() - 1).id);
-                    history = history.subList(0, history.size() - 1);
-                }
-            }
-            final String prompt = ChatTemplates.build(m.chatTemplate,
-                    conv != null ? conv.systemPrompt : null, history, userText);
-
-            LlamaEngine.GenParams p = new LlamaEngine.GenParams(); // default 0.7/0.9/40/1.1/512
-            final int ctx = sharedEngineConfigEpoch == perfEpoch() && sharedEngine != null
-                    ? sharedEngineInitCtx : contextPerTier(host.deviceInfo(), m.context);
-
-            boolean started = sharedEngine.generateAsync(prompt, p, ctx, new LlamaEngine.Callback() {
-                @Override public void onNativeToken(String piece) {
-                    ui.post(() -> { if (isAdded()) appendToken(piece); });
-                }
-
-                @Override public void onNativeDone(int nGen, int stopReason, double msTotal) {
-                    ui.post(() -> { if (isAdded()) finishGeneration(nGen, stopReason, msTotal); });
-                }
-            });
-            if (!started) {
-                ui.post(() -> onGenerationFailed("Engine busy or not ready"));
-            }
-        });
-    }
-
-    private int contextPerTier(DeviceInfo dev, int modelContext) {
-        DeviceInfo.Tier tier = dev != null ? dev.tier() : DeviceInfo.Tier.LOW;
-        int ctx = tier == DeviceInfo.Tier.HIGH ? 8192
-                : tier == DeviceInfo.Tier.MID ? 4096 : 2048;
-        return modelContext > 0 ? Math.min(ctx, modelContext) : ctx;
     }
 
     private void onGenerationFailed(String msg) {
         if (!isAdded()) return; // fragment detached mid-generation
+        if (GenerationState.get().convId != convId) return; // v1.1.3: room beda conv
         generating = false;
         switchingModel = false;
         footer.setVisibility(View.GONE);
         sendBtn.setEnabled(true);
         sendBtn.setAlpha(1f);
-        // The unanswered user message is deleted from the DB so history does
-        // not keep an orphan bubble when the chat is reopened.
-        deleteLastUserMessage();
+        // Orphan user bubble dibuang HANYA kalau init engine gagal (tidak ada
+        // pesan assistant sama sekali) — error generatif lain dipertahankan.
+        if (GenerationState.get().lastInitFailed) deleteLastUserMessage();
+        refreshStatusDot(); // segera saat init gagal: dot Offline
         TextView err = new TextView(getActivity());
         err.setText(msg);
         err.setTextSize(13);
@@ -627,32 +636,15 @@ public class ChatRoomFragment extends Fragment {
         scrollToBottom();
     }
 
-    // Called on the UI thread per token; guards against a detached fragment
-    // (back press mid-generation must not NPE).
-    private void appendToken(String piece) {
-        if (!isAdded() || messagesView == null) return;
-        streamingText.append(piece);
-        nGeneratedLive++;
-        if (streamingBubble == null) {
-            insertStreamingCard();
-        } else {
-            stopThinkingDots(); // first token arrived: stop caret blink
-        }
-        renderStreamingState();
-        scrollToBottom();
-        double secs = (System.currentTimeMillis() - genStartMs) / 1000.0;
-        double tps = secs > 0.05 ? nGeneratedLive / secs : 0.0;
-        footerStats.setText(nGeneratedLive + " tokens · " + fmt1(tps) + " tok/s");
-    }
-
     /**
-     * Render ulang seluruh akumulasi RAW ke (think collapsible + answer).
+     * Render ulang seluruh akumulasi RAW (dari GenerationState.raw — milik
+     * service) ke (think collapsible + answer).
      * Re-split seluruh string tiap update — tag yang terbelah antar token
      * ("<thi" + "nk>") tetap terdeteksi.
      */
     private void renderStreamingState() {
         if (!isAdded() || streamingBubble == null) return;
-        ThinkSplit.Result r = ThinkSplit.parse(streamingText.toString());
+        ThinkSplit.Result r = ThinkSplit.parse(GenerationState.get().rawText());
         ensureThinkSection(r.hasThink);
         if (r.hasThink) {
             boolean live = generating;
@@ -739,12 +731,14 @@ public class ChatRoomFragment extends Fragment {
             retry.setTypeface(Typeface.DEFAULT_BOLD);
             retry.setTextColor(0xFF5B8DEF);
             retry.setPadding(dp(14), dp(6), dp(14), dp(10));
-            final String raw = rawText(rawContent);
             retry.setOnClickListener(v -> {
-                if (generating) return;
+                if (GenerationService.isBusy()) return;
                 // hapus tampilan section lama (note + retry ikut hilang bareng parentnya)
                 messagesView.removeView(section);
-                startGeneration(lastUserTextFor(raw), true);
+                // Retry via service — tanpa duplikasi pesan user (text terakhir dipakai service dari DB).
+                GenerationService.start(getActivity(), convId, lastUserTextFor(""), true,
+                        model, conv != null ? conv.systemPrompt : null);
+                enterGeneratingUi();
             });
             LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -757,6 +751,7 @@ public class ChatRoomFragment extends Fragment {
 
     /** Ambil pesan user terakhir dari DB (untuk Retry — bubble user tidak diduplikasi). */
     private String lastUserTextFor(String ignore) {
+        if (conv == null) return "";
         List<ChatDatabase.Message> ms = ChatDatabase.get(getActivity()).getMessages(convId);
         for (int i = ms.size() - 1; i >= 0; i--) {
             if (ms.get(i).role == ChatDatabase.ROLE_USER) return ms.get(i).content;
@@ -799,31 +794,18 @@ public class ChatRoomFragment extends Fragment {
         return section;
     }
 
-    private void finishGeneration(int nGen, int stopReason, double msTotal) {
+    /**
+     * Dipanggil dari onGenerationUpdate saat service melaporkan selesai sukses.
+     * insertMessage TIDAK di sini — service sudah insert; fragment hanya
+     * render ulang pesan final dari DB (loadHistory).
+     */
+    private void finishGeneration() {
         if (!isAdded()) return; // fragment detached mid-generation
-        generating = false;
+        if (GenerationState.get().convId != convId) return; // v1.1.3: room beda conv
         sendBtn.setEnabled(true);
         sendBtn.setAlpha(1f);
         footer.setVisibility(View.GONE);
-        if (nGen < 0) {
-            onGenerationFailed("Generation failed");
-            return;
-        }
-        String content = streamingText.toString(); // RAW, dengan tag think
-        double secs = msTotal / 1000.0;
-        double tps = secs > 0 ? nGen / secs : 0.0;
-        // Fitur B: simpan model yang aktif SAAT pesan dibuat (atribusi asal).
-        ChatDatabase.get(getActivity()).insertMessage(convId, ChatDatabase.ROLE_ASSISTANT,
-                content, nGen, tps, model != null ? model.id : null);
-        removeStreamingCard();
-        addCardAiParsed(content); // render think collapsible + answer
-        TextView stats = addStatsRow();
-        // Fitur B: "<Nama model> · N tokens · X tok/s"
-        String mName = model != null ? model.name : null;
-        stats.setText(mName != null
-                ? mName + " · " + nGen + " tokens · " + fmt1(tps) + " tok/s"
-                : nGen + " tokens · " + fmt1(tps) + " tok/s");
-        scrollToBottom();
+        loadHistory(); // render final (think collapsible + stats) dari DB
         ((Host) getActivity()).onConversationListChanged();
     }
 
@@ -879,7 +861,6 @@ public class ChatRoomFragment extends Fragment {
             thinkingBody = null;
         }
         thinkingExpanded = false;
-        streamingText.setLength(0);
     }
 
     // ------------------------------------------------------------------- UI
@@ -1003,9 +984,12 @@ public class ChatRoomFragment extends Fragment {
             row.setOrientation(LinearLayout.VERTICAL);
             row.setBackgroundResource(R.drawable.bg_row_ripple);
             int p = dp(14);
-            row.setPadding(p, p, p, p);
-            parent.addView(row, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            row.setPadding(p, dp(12), p, dp(12));
+            // WRAP_CONTENT tingginya — jangan pernah meregang memenuhi sheet.
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = dp(8); // gap seragam antar baris
+            parent.addView(row, lp);
             render();
         }
 
@@ -1067,7 +1051,7 @@ public class ChatRoomFragment extends Fragment {
                 cap.setTextSize(12);
                 cap.setTextColor(0xFF7C8AA5);
                 LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 clp.topMargin = dp(2);
                 row.addView(cap, clp);
                 row.setClickable(true);
@@ -1105,15 +1089,20 @@ public class ChatRoomFragment extends Fragment {
                     ilp.topMargin = dp(4);
                     row.addView(info, ilp);
                 } else {
+                    // IDLE: caption "Not downloaded" + tombol Download di kanan
+                    // baris yang sama (row wrap → tambahkan baris flex di bawah head).
+                    LinearLayout line2 = new LinearLayout(getActivity());
+                    line2.setOrientation(LinearLayout.HORIZONTAL);
+                    line2.setGravity(Gravity.CENTER_VERTICAL);
+
                     TextView cap = new TextView(getActivity());
                     cap.setText("Not downloaded");
                     cap.setTextSize(12);
                     cap.setTextColor(0xFF5B6678);
-                    row.addView(cap, new LinearLayout.LayoutParams(0,
-                            LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-                }
+                    LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+                    line2.addView(cap, clp);
 
-                if (shape == SHAPE_IDLE) {
                     TextView dl = new TextView(getActivity());
                     dl.setText("Download");
                     dl.setTextColor(0xFFFFFFFF);
@@ -1123,8 +1112,16 @@ public class ChatRoomFragment extends Fragment {
                     dl.setPadding(dp(14), dp(8), dp(14), dp(8));
                     LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                    dlp.topMargin = dp(8);
-                    row.addView(dl, dlp);
+                    dlp.leftMargin = dp(8);
+                    line2.addView(dl, dlp);
+                    dl.setOnClickListener(v -> {
+                        if (generating || switchingModel) return;
+                        ((Host) getActivity()).startDownloadFromChat(m);
+                    });
+                    LinearLayout.LayoutParams l2lp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    l2lp.topMargin = dp(4);
+                    row.addView(line2, l2lp);
                     row.setClickable(true);
                     row.setOnClickListener(v -> {
                         if (generating || switchingModel) return;

@@ -106,4 +106,32 @@ public final class ChatTemplates {
     }
 
     private ChatTemplates() { }
+
+    /**
+     * Prompt auto-judul (item 4, v1.1.3): minta judul pendek (maks 5 kata)
+     * dari giliran user + assistant pertama, dalam bahasa percakapan.
+     * Dipanggil lewat jalur generasi sama (GenerationService.runTitleGeneration),
+     * tanpa merebut engine dari generation chat.
+     */
+    public static String buildAutoTitlePrompt(String chatTemplate, String system,
+                                              String firstUser, String firstAssistant) {
+        String instruction =
+                "Write a short title (maximum 5 words) for this conversation, "
+                + "in the same language the conversation uses. "
+                + "Reply with ONLY the title text, no quotes, no punctuation at the end.\n\n"
+                + "User: " + cut(firstUser, 300) + "\n"
+                + "Assistant: " + cut(firstAssistant, 300) + "\n\n"
+                + "Title:";
+        List<ChatDatabase.Message> empty = java.util.Collections.emptyList();
+        String sys = (system == null || system.trim().isEmpty())
+                ? "You generate short conversation titles." : system.trim();
+        return build(chatTemplate, sys, empty, instruction);
+    }
+
+    /** Potong + rapikan string helper. */
+    private static String cut(String s, int n) {
+        if (s == null) return "";
+        String t = s.trim();
+        return t.length() > n ? t.substring(0, n) : t;
+    }
 }

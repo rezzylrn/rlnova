@@ -7,13 +7,14 @@ import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -22,6 +23,9 @@ import java.util.Locale;
  * ChatListFragment (mockup 03, list page): header "Conversations",
  * rows 72dp (judul + preview + waktu), FAB 56dp tombol chat baru.
  * Tanpa dependency — RecyclerView di-flatten ke LinearLayout + ScrollView.
+ *
+ * v1.1.3 (Step C): tombol titik-tiga (⋮) per baris → PopupMenu
+ * Pin/Unpin, Rename, Remove. Baris pinned diberi penanda teks "PINNED".
  */
 public class ChatListFragment extends Fragment {
 
@@ -123,13 +127,17 @@ public class ChatListFragment extends Fragment {
     private View buildRow(final ChatDatabase.Conversation c, SimpleDateFormat fmt, long now) {
         android.content.Context ctx = getActivity();
         LinearLayout row = new LinearLayout(ctx);
-        row.setOrientation(LinearLayout.VERTICAL);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
         row.setBackgroundResource(R.drawable.bg_row_ripple);
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(72));
-        int margin = dp(8);
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        rp.topMargin = dp(8);
+        row.setPadding(dp(16), dp(12), dp(8), dp(12));
+
+        // ---- kolom konten (judul + preview/waktu) — menekuk saat ⋮ ada
+        LinearLayout col = new LinearLayout(ctx);
+        col.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(ctx);
         title.setText(c.title == null || c.title.isEmpty() ? "New conversation" : c.title);
@@ -137,7 +145,7 @@ public class ChatListFragment extends Fragment {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(0xFFEDF1F7);
         title.setMaxLines(1);
-        row.addView(title);
+        col.addView(title);
 
         LinearLayout sub = new LinearLayout(ctx);
         sub.setOrientation(LinearLayout.HORIZONTAL);
@@ -149,31 +157,121 @@ public class ChatListFragment extends Fragment {
         preview.setMaxLines(1);
         sub.addView(preview, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        // Penanda PINNED (teks secondary, bukan emoji)
+        TextView pinnedTag = new TextView(ctx);
+        pinnedTag.setText("PINNED");
+        pinnedTag.setTextSize(10);
+        pinnedTag.setTypeface(Typeface.DEFAULT_BOLD);
+        pinnedTag.setTextColor(0xFF7C8AA5);
+        pinnedTag.setVisibility(c.pinned ? View.VISIBLE : View.GONE);
+        sub.addView(pinnedTag, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
         TextView time = new TextView(ctx);
         time.setText(relativeTime(c.updatedAt, now, fmt));
         time.setTextSize(12);
         time.setTextColor(0xFF7C8AA5);
-        sub.addView(time, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        tlp.leftMargin = dp(6);
+        sub.addView(time, tlp);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         slp.topMargin = dp(4);
-        row.addView(sub, slp);
+        col.addView(sub, slp);
+
+        row.addView(col, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        // ---- tombol titik-tiga (⋮)
+        TextView menuBtn = new TextView(ctx);
+        menuBtn.setText("⋮");
+        menuBtn.setTextSize(18);
+        menuBold(menuBtn);
+        menuBtn.setTextColor(0xFF9AA6B8);
+        menuBtn.setPadding(dp(10), dp(4), dp(6), dp(4));
+        menuBtn.setBackgroundResource(R.drawable.bg_row_ripple);
+        menuBtn.setOnClickListener(v -> showRowMenu(menuBtn, c));
+        row.addView(menuBtn, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         row.setOnClickListener(v -> ((Host) getActivity()).openChatRoom(c.id));
         row.setOnLongClickListener(v -> {
-            new android.app.AlertDialog.Builder(getActivity())
-                    .setTitle("Delete conversation?")
-                    .setMessage(c.title)
-                    .setPositiveButton("Delete", (d, w) -> {
-                        ChatDatabase.get(getActivity()).deleteConversation(c.id);
-                        reload();
-                    })
-                    .setNegativeButton("Cancel", null)
-                    .show();
+            showRowMenu(menuBtn, c);
             return true;
         });
         return row;
+    }
+
+    private void menuBold(TextView t) { t.setTypeface(Typeface.DEFAULT_BOLD); }
+
+    /** PopupMenu native: Pin/Unpin, Rename, Remove. */
+    private void showRowMenu(View anchor, final ChatDatabase.Conversation c) {
+        if (!isAdded()) return;
+        PopupMenu pm = new PopupMenu(getActivity(), anchor);
+        pm.getMenu().add(c.pinned ? "Unpin" : "Pin");
+        pm.getMenu().add("Rename");
+        pm.getMenu().add("Remove");
+        pm.setOnMenuItemClickListener(item -> {
+            String t = item.getTitle().toString();
+            if ("Pin".equals(t)) {
+                ChatDatabase.get(getActivity()).setPinned(c.id, true);
+                reload();
+            } else if ("Unpin".equals(t)) {
+                ChatDatabase.get(getActivity()).setPinned(c.id, false);
+                reload();
+            } else if ("Rename".equals(t)) {
+                showRenameDialog(c);
+            } else if ("Remove".equals(t)) {
+                confirmDelete(c);
+            }
+            return true;
+        });
+        pm.show();
+    }
+
+    private void showRenameDialog(final ChatDatabase.Conversation c) {
+        if (!isAdded()) return;
+        final EditText input = new EditText(getActivity());
+        input.setText(c.title == null || c.title.isEmpty() ? "New conversation" : c.title);
+        input.setSelection(input.getText().length());
+        input.setTextColor(0xFFEDF1F7);
+        input.setHintTextColor(0xFF5B6678);
+        int p = dp(16);
+        FrameLayout wrap = new FrameLayout(getActivity());
+        wrap.setPadding(p, dp(8), p, 0);
+        wrap.addView(input, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
+        new android.app.AlertDialog.Builder(getActivity())
+                .setTitle("Rename conversation")
+                .setView(wrap)
+                .setPositiveButton("Save", (d, w) -> {
+                    String t = input.getText() == null ? "" : input.getText().toString().trim();
+                    if (t.isEmpty()) return; // Cancel-equivalent: tidak mengubah apa-apa
+                    ChatDatabase.get(getActivity()).renameConversationManual(c.id, t);
+                    reload();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void confirmDelete(final ChatDatabase.Conversation c) {
+        if (!isAdded()) return;
+        new android.app.AlertDialog.Builder(getActivity())
+                .setTitle("Delete this conversation?")
+                .setMessage(c.title)
+                .setPositiveButton("Delete", (d, w) -> {
+                    ChatDatabase.get(getActivity()).deleteConversation(c.id);
+                    if (GenerationState.get().convId == c.id
+                            && !GenerationState.get().generating) {
+                        // tidak ada yang perlu dilakukan khusus — chat room
+                        // yang terbuka menangani conv null di sisi fragment
+                    }
+                    reload();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private String previewText(long convId) {

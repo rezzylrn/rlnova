@@ -90,6 +90,14 @@ public final class ModelCatalog {
         return new File(ctx.getFilesDir(), "models/" + m.file);
     }
 
+    /**
+     * Path file .gguf berdasarkan model id (penamaan service/download:
+     * filesDir/models/<id>.gguf — dipakai GenerationService & ChatRoomFragment).
+     */
+    public static File localFileById(Context ctx, String modelId) {
+        return new File(new File(ctx.getFilesDir(), "models"), modelId + ".gguf");
+    }
+
     /** Nama tampilan dari modelId — fallback ke raw id kalau tidak ada di katalog. */
     public static String displayNameFor(java.util.List<Model> models, String modelId) {
         if (modelId == null) return null;

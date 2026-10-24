@@ -62,6 +62,7 @@ public class LibraryActivity extends Activity implements
 
         setContentView(root);
         showLibrary();
+        GenerationService.setMainActivityRef(this); // auto-title: refresh list
     }
 
     static DeviceInfo collectDeviceInfo(Context ctx) {

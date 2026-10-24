@@ -22,6 +22,8 @@ public final class ChatDatabase extends SQLiteOpenHelper {
         public String systemPrompt;
         public long createdAt;
         public long updatedAt;
+        public boolean pinned;
+        public boolean titleAuto;
     }
 
     public static final class Message {
@@ -51,7 +53,7 @@ public final class ChatDatabase extends SQLiteOpenHelper {
     private final SQLiteDatabase db;
 
     private ChatDatabase(Context ctx) {
-        super(ctx, "rlnova.db", null, 2);
+        super(ctx, "rlnova.db", null, 3);
         db = getWritableDatabase();
     }
 
@@ -63,7 +65,9 @@ public final class ChatDatabase extends SQLiteOpenHelper {
                 + "title TEXT NOT NULL DEFAULT 'New conversation', "
                 + "system_prompt TEXT NOT NULL DEFAULT '', "
                 + "created_at INTEGER NOT NULL, "
-                + "updated_at INTEGER NOT NULL)");
+                + "updated_at INTEGER NOT NULL, "
+                + "pinned INTEGER NOT NULL DEFAULT 0, "
+                + "title_auto INTEGER NOT NULL DEFAULT 0)");
         d.execSQL("CREATE TABLE messages ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                 + "conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, "
@@ -84,6 +88,11 @@ public final class ChatDatabase extends SQLiteOpenHelper {
             // baris lama dapat model_id NULL (ditampilkan tanpa nama model).
             d.execSQL("ALTER TABLE messages ADD COLUMN model_id TEXT");
         }
+        if (oldV < 3) {
+            // v3 (v1.1.3 item 4): pin + flag auto-judul.
+            d.execSQL("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+            d.execSQL("ALTER TABLE conversations ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 0");
+        }
     }
 
     // -------------------------------------------------------------- CRUD
@@ -101,8 +110,9 @@ public final class ChatDatabase extends SQLiteOpenHelper {
     public Conversation getConversation(long id) {
         Conversation r = null;
         android.database.Cursor c = db.rawQuery(
-                "SELECT id, model_id, title, system_prompt, created_at, updated_at "
-                        + "FROM conversations WHERE id = ?", new String[]{String.valueOf(id)});
+                "SELECT id, model_id, title, system_prompt, created_at, updated_at, "
+                        + "pinned, title_auto FROM conversations WHERE id = ?",
+                new String[]{String.valueOf(id)});
         if (c.moveToFirst()) r = readConversation(c);
         c.close();
         return r;
@@ -111,8 +121,9 @@ public final class ChatDatabase extends SQLiteOpenHelper {
     public List<Conversation> listConversations() {
         ArrayList<Conversation> out = new ArrayList<>();
         android.database.Cursor c = db.rawQuery(
-                "SELECT id, model_id, title, system_prompt, created_at, updated_at "
-                        + "FROM conversations ORDER BY updated_at DESC", null);
+                "SELECT id, model_id, title, system_prompt, created_at, updated_at, "
+                        + "pinned, title_auto FROM conversations "
+                        + "ORDER BY pinned DESC, updated_at DESC", null);
         while (c.moveToNext()) out.add(readConversation(c));
         c.close();
         return out;
@@ -126,6 +137,8 @@ public final class ChatDatabase extends SQLiteOpenHelper {
         r.systemPrompt = c.getString(3);
         r.createdAt = c.getLong(4);
         r.updatedAt = c.getLong(5);
+        r.pinned = !c.isNull(6) && c.getInt(6) != 0;
+        r.titleAuto = !c.isNull(7) && c.getInt(7) != 0;
         return r;
     }
 
@@ -134,6 +147,28 @@ public final class ChatDatabase extends SQLiteOpenHelper {
         ContentValues cv = new ContentValues();
         cv.put("title", title.length() > 60 ? title.substring(0, 60) : title);
         cv.put("updated_at", System.currentTimeMillis());
+        db.update("conversations", cv, "id=?", new String[]{String.valueOf(id)});
+    }
+
+    /** Judul dari auto-judul AI (item 4) — tidak menyentuh updated_at. */
+    public void setAutoTitle(long id, String title) {
+        ContentValues cv = new ContentValues();
+        cv.put("title", title.length() > 60 ? title.substring(0, 60) : title);
+        cv.put("title_auto", 1);
+        db.update("conversations", cv, "id=?", new String[]{String.valueOf(id)});
+    }
+
+    /** Rename manual oleh user — menandai title_auto=1 agar auto-judul tak menimpa. */
+    public void renameConversationManual(long id, String title) {
+        ContentValues cv = new ContentValues();
+        cv.put("title", title.length() > 60 ? title.substring(0, 60) : title);
+        cv.put("title_auto", 1);
+        db.update("conversations", cv, "id=?", new String[]{String.valueOf(id)});
+    }
+
+    public void setPinned(long id, boolean pinned) {
+        ContentValues cv = new ContentValues();
+        cv.put("pinned", pinned ? 1 : 0);
         db.update("conversations", cv, "id=?", new String[]{String.valueOf(id)});
     }
 
@@ -229,6 +264,18 @@ public final class ChatDatabase extends SQLiteOpenHelper {
         }
         c.close();
         return out;
+    }
+
+    /** Hitung jumlah pesan user dalam satu percakapan (trigger auto-judul). */
+    public int countUserMessages(long convId) {
+        android.database.Cursor c = db.rawQuery(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id=? AND role="
+                        + ROLE_USER,
+                new String[]{String.valueOf(convId)});
+        int n = 0;
+        if (c.moveToFirst()) n = c.getInt(0);
+        c.close();
+        return n;
     }
 
     private void touchConversation(long convId) {
