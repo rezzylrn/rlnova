@@ -162,7 +162,7 @@ public class OptimizationFragment extends Fragment {
         tvCtx.setText(String.valueOf(perf.nCtx));
         sbCtx = sliderBarCtx(rowC, perf.nCtx);
 
-        LinearLayout gpuRow = switchRow(ctx, "Use GPU", perf.useGpu);
+        LinearLayout gpuRow = switchRow(ctx, "GPU offload (Vulkan)", perf.useGpu);
         swGpu = (android.widget.Switch) gpuRow.getTag();
         card2.addView(gpuRow);
         tvGpuCaption = caption(ctx);
@@ -516,13 +516,13 @@ public class OptimizationFragment extends Fragment {
     private void updateGpuCaption() {
         boolean mali = PerfPrefs.isMaliGpu();
         if (swGpu.isChecked() && mali) {
-            tvGpuCaption.setText("Warning: Vulkan on Mali GPUs is unstable — may crash");
+            tvGpuCaption.setText("Warning: Vulkan on Mali GPUs is unstable — may fall back to CPU");
             tvGpuCaption.setTextColor(0xFFF2A93B);
         } else if (!swGpu.isChecked()) {
-            tvGpuCaption.setText("Inference runs fully on the CPU");
+            tvGpuCaption.setText("Inference runs fully on the CPU (default)");
         } else {
             tvGpuCaption.setText(perf.gpuLayers > 0
-                    ? perf.gpuLayers + " model layers delegated to the GPU (Vulkan)"
+                    ? perf.gpuLayers + " model layers delegated to the GPU (Vulkan, experimental)"
                     : "GPU on but 0 layers — set GPU layers above");
         }
     }

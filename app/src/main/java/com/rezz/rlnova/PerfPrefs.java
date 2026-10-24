@@ -70,9 +70,9 @@ public final class PerfPrefs {
                 dev != null ? dev.recommendedThreads() : Math.max(1, cores - 2));
         p.threads = clamp(p.threads, 1, cores);
         p.nCtx = sp.getInt("nCtx", dev != null ? defaultCtx(dev.tier()) : 2048);
-        // GPU default ON hanya jika Vulkan non-Mali terdeteksi (SPEC: Mali tidak stabil).
-        boolean gpuDefault = dev != null && dev.hasVulkan && !mali;
-        p.useGpu = sp.getBoolean("useGpu", gpuDefault);
+        // v1.1.5: GPU default OFF — Vulkan offload eksperimental, offload hanya
+        // aktif kalau user menyalakan switch di panel Optimasi.
+        p.useGpu = sp.getBoolean("useGpu", false);
         int defLayers = mali ? 0 : (p.useGpu && dev != null ? defaultGpuLayers(dev) : 0);
         p.gpuLayers = clamp(sp.getInt("gpuLayers", defLayers), 0, 99);
         p.battery = sp.getBoolean("battery", false);
