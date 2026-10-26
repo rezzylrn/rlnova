@@ -639,6 +639,14 @@ public class ChatRoomFragment extends Fragment {
                 if (st.lastInitFailed) deleteLastUserMessage();
                 refreshStatusDot(); // init gagal → dot Offline segera
                 onGenerationFailed(st.error);
+            } else if (st.emptyGeneration || st.stopReason == -2) {
+                // v1.1.11: 0 token / raw kosong — JANGAN render kartu kosong.
+                // Tampilkan catatan + Retry (pola fallback think-only), pesan
+                // user TIDAK dihapus supaya Retry pakai teks yang sama.
+                generating = false;
+                removeStreamingCard();
+                refreshStatusDot();
+                showEmptyGenerationNote();
             } else if (st.stopReason < 0) {
                 onGenerationFailed("Generation failed");
             } else {
@@ -646,6 +654,54 @@ public class ChatRoomFragment extends Fragment {
                 finishGeneration();
             }
         }
+    }
+
+    /**
+     * v1.1.11: generation selesai dengan 0 token (model langsung EOS) —
+     * kartu kosong tidak dibuat (service tidak insert DB). Tampilkan catatan
+     * "No answer generated." + tombol Retry, pola sama dengan fallback
+     * think-only di addCardAiParsed. Pesan user tetap di DB supaya Retry
+     * memakai teks yang sama (GenerationService.start dengan isRetry=true).
+     */
+    private void showEmptyGenerationNote() {
+        if (!isAdded()) return;
+        if (GenerationState.get().convId != convId) return; // room beda conv
+        sendBtn.setEnabled(true);
+        sendBtn.setAlpha(1f);
+        footer.setVisibility(View.GONE);
+        TextView note = new TextView(getActivity());
+        note.setText("No answer generated.");
+        note.setTextSize(13);
+        note.setTextColor(0xFF9AA6B8);
+        note.setPadding(dp(14), dp(8), dp(14), dp(10));
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        nlp.gravity = Gravity.START;
+        nlp.rightMargin = dp(48);
+        nlp.topMargin = dp(4);
+        messagesView.addView(note, nlp);
+
+        TextView retry = new TextView(getActivity());
+        retry.setText("Retry");
+        retry.setTextSize(14);
+        retry.setTypeface(Typeface.DEFAULT_BOLD);
+        retry.setTextColor(0xFF5B8DEF);
+        retry.setPadding(dp(14), dp(6), dp(14), dp(10));
+        retry.setOnClickListener(v -> {
+            if (GenerationService.isBusy()) return;
+            messagesView.removeView(note); // note + retry ikut hilang bareng parent
+            messagesView.removeView(retry);
+            GenerationService.start(getActivity(), convId, lastUserTextFor(""), true,
+                    model, conv != null ? conv.systemPrompt : null);
+            enterGeneratingUi();
+        });
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rlp.gravity = Gravity.START;
+        rlp.topMargin = dp(2);
+        rlp.bottomMargin = dp(8);
+        messagesView.addView(retry, rlp);
+        scrollToBottom();
     }
 
     private void onGenerationFailed(String msg) {
@@ -1265,7 +1321,7 @@ public class ChatRoomFragment extends Fragment {
                 });
                 return;
             }
-            whisperEngine.transcribeAsync(pcm, nSamples, result -> ui.post(() -> {
+            final boolean started = whisperEngine.transcribeAsync(pcm, nSamples, result -> ui.post(() -> {
                 resetMicButton();
                 if (!isAdded()) return;
                 if (result == null) {
@@ -1279,6 +1335,16 @@ public class ChatRoomFragment extends Fragment {
                     input.setSelection(input.getText().length());
                 }
             }));
+            // v1.1.11 FIX: transcribeAsync bisa return false (model belum siap /
+            // worker lama masih hidup). Dulu return value ini DIABAIKAN — tidak
+            // ada toast, resetMicButton tidak dipanggil, user tap mic lalu tidak
+            // terjadi apa-apa. Sekarang: toast jelas + reset tombol mic.
+            if (!started) {
+                ui.post(() -> {
+                    toast("Transcription could not start — try again");
+                    resetMicButton();
+                });
+            }
         }, "rlnova-stt").start();
     }
 
@@ -1304,18 +1370,38 @@ public class ChatRoomFragment extends Fragment {
         if (act == null || text == null || text.trim().isEmpty()) return;
 
         if (!VoiceCatalog.isTtsReady(act)) {
-            // Model TTS belum siap → arahkan download, jangan pakai suara sistem.
+            // v1.1.11 FIX: DONE tidak lagi dimasukkan ke cabang "still downloading"
+            // (toast lama bohong). Kondisi dibagi dua: onnx belum ada vs onnx ada
+            // tapi espeak belum terekstrak.
             DownloadState st = DownloadState.get(VoiceCatalog.PIPER_ID_ID);
             DownloadState se = DownloadState.get(VoiceCatalog.PIPER_ESPEAK_ID);
-            if (st.status == DownloadState.DOWNLOADING || st.status == DownloadState.PAUSED
-                    || st.status == DownloadState.DONE
-                    || DownloadState.get(VoiceCatalog.PIPER_ESPEAK_ID).status
-                       == DownloadState.DOWNLOADING) {
+            android.util.Log.w("RlnovaTts", "speak blocked: isTtsReady=false onnxSt=" + st.status
+                    + " espeakSt=" + se.status
+                    + " espeakZipExists=" + new java.io.File(new java.io.File(
+                            act.getFilesDir(), "models"),
+                            VoiceCatalog.PIPER_ESPEAK_ID + ".zip").exists());
+            java.io.File onnx = VoiceCatalog.piperOnnxFile(act);
+            boolean onnxOk = onnx.exists() && onnx.length() == VoiceCatalog.PIPER_ID_ONNX_SIZE_BYTES;
+            if (!onnxOk) {
+                // onnx belum ada: arahkan download (perilaku lama yang benar).
+                if (st.status == DownloadState.DOWNLOADING || st.status == DownloadState.PAUSED) {
+                    toast("TTS voice is still downloading — check the Library tab");
+                } else {
+                    toast("Download the Piper voice model first (Library > Voice models)");
+                    if (getActivity() instanceof LibraryActivity) {
+                        ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperId());
+                        ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperEspeak());
+                    }
+                }
+            } else if (se.status == DownloadState.DOWNLOADING
+                    || se.status == DownloadState.PAUSED) {
+                // espeak memang sedang di-download — pesan jujur.
                 toast("TTS voice is still downloading — check the Library tab");
             } else {
-                toast("Download the Piper voice model first (Library > Voice models)");
+                // onnx DONE tapi data phonemizer tidak lengkap: jujur + picu
+                // ulang download espeak (dulu: diam di cabang "still downloading").
+                toast("Voice data incomplete — re-downloading espeak data");
                 if (getActivity() instanceof LibraryActivity) {
-                    ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperId());
                     ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperEspeak());
                 }
             }

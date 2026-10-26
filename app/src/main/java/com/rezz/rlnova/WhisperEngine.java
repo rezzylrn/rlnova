@@ -54,7 +54,17 @@ public final class WhisperEngine {
      */
     public synchronized boolean transcribeAsync(final short[] pcm, final int nSamples,
                                                 final Callback callback) {
-        if (handle == 0 || worker != null && worker.isAlive()) return false;
+        if (handle == 0) return false;
+        Thread w = worker;
+        if (w != null && w.isAlive()) {
+            // v1.1.11: worker lama yang stuck tidak boleh membunuh percobaan
+            // baru diam-diam. Batalkan (native abort flag antar segmen) dan
+            // interrupt; transcribeAsync baru boleh dipanggil setelah thread
+            // benar-benar mati, kalau masih hidup setelah grace period → false.
+            try { cancel(); } catch (Throwable ignored) { }
+            try { w.join(1500); } catch (InterruptedException ignored) { }
+            if (w.isAlive()) return false;
+        }
         final long h = handle;
         worker = new Thread(() -> {
             String text = null;

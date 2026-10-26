@@ -140,19 +140,36 @@ public final class TtsEngine {
     public static boolean maybeExtractEspeak(Context ctx) {
         File dst = VoiceCatalog.espeakDataDir(ctx);
         if (new File(dst, "lang").exists()) return true;
-        File zip = new File(new File(ctx.getFilesDir(), "models"),
-                VoiceCatalog.PIPER_ESPEAK_ID + ".zip");
+        File models = new File(ctx.getFilesDir(), "models");
+        // v1.1.11 migrasi satu kali: user versi lama bisa punya ".part" espeak
+        // yang sudah selesai (DONE tapi tidak pernah di-rename oleh bug lama).
+        // Kalau ".zip" belum ada tapi ".part" ada dan ukurannya cocok katalog,
+        // rename dulu supaya alur ekstraksi normal jalan tanpa hapus manual.
+        File zip = new File(models, VoiceCatalog.PIPER_ESPEAK_ID + ".zip");
+        if (!zip.exists()) {
+            File part = new File(models, VoiceCatalog.PIPER_ESPEAK_ID + ".part");
+            if (part.exists() && part.length() == VoiceCatalog.PIPER_ESPEAK_SIZE_BYTES) {
+                File z = new File(models, VoiceCatalog.PIPER_ESPEAK_ID + ".zip");
+                if (z.exists()) z.delete();
+                if (!part.renameTo(z)) return false;
+            }
+        }
         if (!zip.exists()) return false;
         File tmp = new File(dst.getParentFile(), dst.getName() + ".tmp");
+        if (tmp.exists()) deleteRecursive(tmp);
         if (!tmp.exists() && !tmp.mkdirs()) return false;
         try (ZipInputStream zin = new ZipInputStream(new FileInputStream(zip))) {
             byte[] buf = new byte[64 * 1024];
             ZipEntry e;
             while ((e = zin.getNextEntry()) != null) {
-                File out = new File(dst, e.getName());
+                // v1.1.11 FIX: entri ditulis ke "tmp" (BUKAN dst) — dulu entri
+                // ditulis ke dst tapi verifikasi mengecek tmp/lang (folder tmp
+                // kosong) sehingga verifikasi selalu gagal. Zip-slip guard
+                // sekarang memvalidasi terhadap folder tmp yang benar.
+                File out = new File(tmp, e.getName());
                 String canonical = out.getCanonicalPath();
-                if (!canonical.startsWith(dst.getCanonicalPath() + File.separator)
-                        && !canonical.equals(dst.getCanonicalPath())) {
+                if (!canonical.startsWith(tmp.getCanonicalPath() + File.separator)
+                        && !canonical.equals(tmp.getCanonicalPath())) {
                     zin.closeEntry(); // zip-slip guard
                     continue;
                 }

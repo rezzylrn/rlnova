@@ -458,6 +458,24 @@ public class GenerationService extends Service {
         st.generating = false;
         st.stopReason = nGen;
         if (nGen >= 0) {
+            String rawOut;
+            synchronized (st.raw) { rawOut = st.raw.toString(); }
+            // v1.1.11 FIX: model yang langsung mengeluarkan EOS (0 token, raw
+            // kosong) jangan disimpan sebagai pesan assistant — dulu jadi kartu
+            // kosong + "0 tokens". Tandai error supaya UI menampilkan catatan
+            // "No answer generated." + tombol Retry, dan JANGAN insert DB.
+            if (rawOut.trim().isEmpty() && nGen == 0) {
+                st.raw.setLength(0);
+                st.tokensFinal = 0;
+                st.tokPerSec = 0;
+                st.modelIdFinal = m.id;
+                st.stopReason = -2;       // penanda "kosong" untuk fragment
+                st.emptyGeneration = true;
+                notifyDone();
+                stopForeground(true);
+                stopSelf();
+                return;
+            }
             double secs = msTotal / 1000.0;
             double tps = secs > 0 ? nGen / secs : 0.0;
             // SERVICE yang insert pesan assistant (RAW + stats + model_id).

@@ -35,6 +35,8 @@ public final class GenerationState {
     public String error;               // non-null = gagal
     public volatile boolean userStopRequested = false;
     public volatile boolean lastInitFailed = false; // init engine gagal terakhir (status Offline)
+    /** v1.1.11: generation selesai tapi 0 token / raw kosong — tanpa kartu, tampil Retry. */
+    public volatile boolean emptyGeneration = false;
 
     /** ConvId yang menunggu auto-judul (item 4), atau -1. */
     public volatile long pendingAutoTitleConv = -1;
@@ -49,6 +51,7 @@ public final class GenerationState {
         this.modelIdFinal = null;
         this.stopReason = -1;
         this.error = null;
+        this.emptyGeneration = false;
         synchronized (raw) { raw.setLength(0); }
     }
 

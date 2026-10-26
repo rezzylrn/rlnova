@@ -253,6 +253,15 @@ public class DownloadService extends Service {
                 // v1.1.8: espeak-ng-data TIDAK di-rename — file .zip-nya tetap
                 // dipakai TtsEngine.maybeExtractEspeak (dihapus setelah ekstrak).
                 if (id.equals(VoiceCatalog.PIPER_ESPEAK_ID)) {
+                    // v1.1.11 FIX: sebelumnya cabang ini hanya menandai DONE
+                    // tanpa rename — file tetap ".part", TtsEngine mencari
+                    // ".zip" dan tidak pernah ketemu → TTS tidak pernah siap.
+                    File zip = new File(dir, VoiceCatalog.PIPER_ESPEAK_ID + ".zip");
+                    if (zip.exists()) zip.delete();
+                    if (!out.renameTo(zip)) {
+                        copy(out, zip);
+                        out.delete();
+                    }
                     st.status = DownloadState.DONE;
                     updateNotification(st, id);
                     notifyUiChanged();
