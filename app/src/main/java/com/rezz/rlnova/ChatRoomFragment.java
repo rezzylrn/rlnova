@@ -1393,19 +1393,26 @@ public class ChatRoomFragment extends Fragment {
                         ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperEspeak());
                     }
                 }
-            } else if (se.status == DownloadState.DOWNLOADING
-                    || se.status == DownloadState.PAUSED) {
+                return;
+            }
+            if (se.status == DownloadState.DOWNLOADING || se.status == DownloadState.PAUSED) {
                 // espeak memang sedang di-download — pesan jujur.
                 toast("TTS voice is still downloading — check the Library tab");
-            } else {
-                // onnx DONE tapi data phonemizer tidak lengkap: jujur + picu
-                // ulang download espeak (dulu: diam di cabang "still downloading").
+                return;
+            }
+            // v1.1.12 FIX: coba ekstrak ulang DULU dari zip yang mungkin
+            // sudah ada (v1.1.11 gagal ekstrak karena prefix folder zip —
+            // zip-nya valid). Kalau ekstrak sukses → langsung bicara,
+            // JANGAN picu download ulang (itu yang bikin loop download
+            // tiap tap). Re-download hanya kalau zip memang tidak ada.
+            if (!TtsEngine.maybeExtractEspeak(act)) {
                 toast("Voice data incomplete — re-downloading espeak data");
                 if (getActivity() instanceof LibraryActivity) {
                     ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperEspeak());
                 }
+                return;
             }
-            return;
+            // ekstrak sukses: isTtsReady sekarang true → jatuh ke bawah, bicara.
         }
 
         speaking = true;

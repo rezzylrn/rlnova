@@ -108,10 +108,13 @@ Java_com_rezz_rlnova_WhisperEngine_nativeWhisperTranscribe(
     p.no_context       = true;           // don't carry context across calls
     p.suppress_blank   = true;
     p.suppress_nst     = true;
-    // ggml_abort_callback: return true to CONTINUE, false to abort.
+    // ggml_abort_callback: return true to ABORT ("If it returns true, the
+    // computation is aborted" — ggml.h), false to continue. Jadi abort hanya
+    // saat flag cancel di-set; v1.1.12 fix — versi lama membalik kondisinya
+    // (return !(cancel)) sehingga ggml meng-abort SEGERA setiap transkripsi.
     p.abort_callback = [](void * user_data) -> bool {
         WhisperCtx * wc2 = (WhisperCtx *) user_data;
-        return !(wc2 && wc2->cancel.load());
+        return (wc2 && wc2->cancel.load());
     };
     p.abort_callback_user_data = wc;
 

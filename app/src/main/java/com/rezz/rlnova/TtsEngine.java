@@ -160,17 +160,53 @@ public final class TtsEngine {
         if (!tmp.exists() && !tmp.mkdirs()) return false;
         try (ZipInputStream zin = new ZipInputStream(new FileInputStream(zip))) {
             byte[] buf = new byte[64 * 1024];
+            // v1.1.12 FIX: zip espeak dibungkus SATU folder top-level
+            // "espeak-ng-data/" (semua entri ber-prefix itu). Dulu ekstrak
+            // menghasilkan tmp/espeak-ng-data/lang sehingga verifikasi
+            // tmp/lang selalu gagal → ekstrak diulang tiap tap speaker.
+            // Deteksi prefix bersama: segmen pertama yang dimiliki SEMUA
+            // entri berisi "/" (dan bukan "." atau ".."); kalau tidak ada,
+            // ekstrak apa adanya.
+            String commonPrefix = null;
+            {
+                java.util.List<String> names = new java.util.ArrayList<>();
+                ZipEntry pe;
+                while ((pe = zin.getNextEntry()) != null) {
+                    names.add(pe.getName());
+                    zin.closeEntry();
+                }
+                java.util.Set<String> firsts = new java.util.HashSet<>();
+                for (String n : names) {
+                    if (!n.contains("/")) { firsts.clear(); break; }
+                    firsts.add(n.substring(0, n.indexOf('/')));
+                }
+                if (firsts.size() == 1) {
+                    String f = firsts.iterator().next();
+                    if (!f.isEmpty() && !f.equals(".") && !f.equals("..")) commonPrefix = f + "/";
+                }
+                // buka ulang dari awal untuk ekstraksi asli
+                zin.close();
+            }
+            try (ZipInputStream z2 = new ZipInputStream(new FileInputStream(zip))) {
             ZipEntry e;
-            while ((e = zin.getNextEntry()) != null) {
+            while ((e = z2.getNextEntry()) != null) {
+                String name = e.getName();
+                // v1.1.12: strip SATU prefix folder top-level bersama.
+                if (commonPrefix != null) {
+                    if (!name.startsWith(commonPrefix)) { z2.closeEntry(); continue; }
+                    name = name.substring(commonPrefix.length());
+                    if (name.isEmpty()) { z2.closeEntry(); continue; }
+                }
                 // v1.1.11 FIX: entri ditulis ke "tmp" (BUKAN dst) — dulu entri
                 // ditulis ke dst tapi verifikasi mengecek tmp/lang (folder tmp
                 // kosong) sehingga verifikasi selalu gagal. Zip-slip guard
-                // sekarang memvalidasi terhadap folder tmp yang benar.
-                File out = new File(tmp, e.getName());
+                // sekarang memvalidasi terhadap folder tmp yang benar —
+                // v1.1.12: guard tetap jalan terhadap path SETELAH strip.
+                File out = new File(tmp, name);
                 String canonical = out.getCanonicalPath();
                 if (!canonical.startsWith(tmp.getCanonicalPath() + File.separator)
                         && !canonical.equals(tmp.getCanonicalPath())) {
-                    zin.closeEntry(); // zip-slip guard
+                    z2.closeEntry(); // zip-slip guard
                     continue;
                 }
                 if (e.isDirectory()) {
@@ -181,11 +217,11 @@ public final class TtsEngine {
                 if (parent != null) parent.mkdirs();
                 FileOutputStream fos = new FileOutputStream(out);
                 int r;
-                while ((r = zin.read(buf)) > 0) fos.write(buf, 0, r);
+                while ((r = z2.read(buf)) > 0) fos.write(buf, 0, r);
                 fos.close();
-                zin.closeEntry();
+                z2.closeEntry();
             }
-            zin.close();
+            z2.close();
             // tandai selesai: folder "lang" harus ada — verifikasi sebelum rename
             if (!new File(tmp, "lang").exists()) {
                 deleteRecursive(tmp);
@@ -198,6 +234,7 @@ public final class TtsEngine {
             }
             zip.delete();
             return true;
+            } // try-with-resources z2
         } catch (Exception ex) {
             android.util.Log.e(TAG, "extract espeak gagal", ex);
             deleteRecursive(tmp);
