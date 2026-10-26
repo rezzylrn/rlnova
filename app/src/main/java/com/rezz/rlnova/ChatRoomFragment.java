@@ -938,8 +938,10 @@ public class ChatRoomFragment extends Fragment {
         // v1.1.9: baris vertikal = label model (di atas) + kartu + action row (di bawah)
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.VERTICAL);
+        // v1.1.10: row WAJIB MATCH_PARENT — WRAP_CONTENT di dalam WRAP_CONTENT
+        // bikin TextView teks panjang diukur sempit (satu kata per baris).
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.START;
         lp.rightMargin = dp(48);
         lp.topMargin = dp(8);
@@ -969,7 +971,11 @@ public class ChatRoomFragment extends Fragment {
             copyToClipboard(content);
             return true;
         });
-        row.addView(card);
+        // v1.1.10: kartu diberi LayoutParams eksplisit MATCH_PARENT —
+        // default addView tanpa params adalah WRAP_CONTENT (lebar ikut isi,
+        // penyebab kolom sempit saat teks panjang).
+        row.addView(card, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // v1.1.9: action row ikon di bawah kartu final — speaker (TTS) + copy.
         LinearLayout actions = new LinearLayout(c);
