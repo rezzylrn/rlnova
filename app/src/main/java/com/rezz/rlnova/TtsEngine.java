@@ -37,6 +37,15 @@ public final class TtsEngine {
     private static final String TAG = "TtsEngine";
     private static volatile boolean loaded = false;
 
+    /**
+     * v1.1.13 FIX force close: lock global ekstraksi espeak. onResume
+     * (background thread) dan onSpeakClicked (UI thread) bisa memanggil
+     * maybeExtractEspeak bersamaan — tanpa lock ini dua thread menulis ke
+     * folder .tmp yang sama secara bersamaan → hasil korup → sherpa crash
+     * native saat generate. Satu ekstraksi pada satu waktu, dari thread mana pun.
+     */
+    private static final Object EXTRACT_LOCK = new Object();
+
     /** Load libsherpa-onnx-jni.so (+ libonnxruntime.so via NEEDED). Background thread. */
     public static synchronized void loadLibrary() throws UnsatisfiedLinkError {
         if (loaded) return;
@@ -62,11 +71,21 @@ public final class TtsEngine {
         File espeak = VoiceCatalog.espeakDataDir(ctx);
         if (!onnx.exists() || !new File(espeak, "lang").exists()) return false;
 
+        // v1.1.13 pre-flight: jangan serahkan path tokens yang hilang/kosong
+        // ke sherpa — tokensPath() mengekstrak dari assets, tapi kalau hasilnya
+        // tetap tidak ada / 0 byte, init gagal di sini (bukan crash di native).
+        String tokens = tokensPath(ctx);
+        File tokensFile = new File(tokens);
+        if (!tokensFile.exists() || tokensFile.length() == 0) {
+            android.util.Log.e(TAG, "init TTS: tokens tidak ada/kosong: " + tokens);
+            return false;
+        }
+
         com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig vits =
                 new com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig(
                         /* model   = */ onnx.getAbsolutePath(),
                         /* lexicon = */ "",
-                        /* tokens  = */ tokensPath(ctx),
+                        /* tokens  = */ tokens,
                         /* dataDir = */ espeak.getAbsolutePath(),
                         /* dictDir = */ "",
                         /* noiseScale  = */ 0.667f,
@@ -97,7 +116,15 @@ public final class TtsEngine {
     public GeneratedAudio generate(String text) {
         OfflineTts t = tts;
         if (t == null) return null;
-        return t.generate(text, 0, 1.0f);
+        try {
+            // v1.1.13: exception Java dari sherpa (mis. path korup / model
+            // setengah jadi) jadi null → pemanggil menampilkan toast
+            // "Speech synthesis failed", bukan mematikan worker diam-diam.
+            return t.generate(text, 0, 1.0f);
+        } catch (Throwable t2) {
+            android.util.Log.e(TAG, "generate TTS gagal", t2);
+            return null;
+        }
     }
 
     /**
@@ -138,6 +165,16 @@ public final class TtsEngine {
      * @return true bila folder siap dipakai.
      */
     public static boolean maybeExtractEspeak(Context ctx) {
+        // v1.1.13: seluruh ekstraksi (termasuk cek-awal dan migrasi .part)
+        // dijalankan di bawah satu lock global — onResume (background) dan
+        // onSpeakClicked (UI thread) tidak pernah lagi menyentuh folder .tmp
+        // yang sama secara bersamaan.
+        synchronized (EXTRACT_LOCK) {
+            return maybeExtractEspeakLocked(ctx);
+        }
+    }
+
+    private static boolean maybeExtractEspeakLocked(Context ctx) {
         File dst = VoiceCatalog.espeakDataDir(ctx);
         if (new File(dst, "lang").exists()) return true;
         File models = new File(ctx.getFilesDir(), "models");
@@ -269,41 +306,51 @@ public final class TtsEngine {
     public synchronized boolean play(GeneratedAudio audio) {
         stopPlayback();
         if (audio == null || audio.getSamples() == null || audio.getSamples().length == 0) return false;
-        float[] s = audio.getSamples();
-        short[] pcm = new short[s.length];
-        for (int i = 0; i < s.length; i++) {
-            float v = s[i];
-            if (v > 1f) v = 1f; else if (v < -1f) v = -1f;
-            pcm[i] = (short) (v * 32767f);
-        }
-        int sr = audio.getSampleRate();
-        int minBuf = AudioTrack.getMinBufferSize(sr,
-                AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        if (minBuf <= 0) return false;
-        AudioTrack t = new AudioTrack.Builder()
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                .setAudioFormat(new AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(sr)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build())
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(Math.max(minBuf, sr * 2))
-                .build();
-        track = t;
         try {
-            t.play();
-        } catch (Exception e) {
-            try { t.release(); } catch (Exception ignored) { }
+            // v1.1.13: seluruh path build + start AudioTrack dilindungi —
+            // exception dari Builder.build() (mis. format tidak didukung
+            // device) jadi false → toast "Speech synthesis failed", bukan
+            // worker mati diam-diam.
+            float[] s = audio.getSamples();
+            short[] pcm = new short[s.length];
+            for (int i = 0; i < s.length; i++) {
+                float v = s[i];
+                if (v > 1f) v = 1f; else if (v < -1f) v = -1f;
+                pcm[i] = (short) (v * 32767f);
+            }
+            int sr = audio.getSampleRate();
+            int minBuf = AudioTrack.getMinBufferSize(sr,
+                    AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            if (minBuf <= 0) return false;
+            AudioTrack t = new AudioTrack.Builder()
+                    .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build())
+                    .setAudioFormat(new AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sr)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build())
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setBufferSizeInBytes(Math.max(minBuf, sr * 2))
+                    .build();
+            track = t;
+            try {
+                t.play();
+            } catch (Exception e) {
+                try { t.release(); } catch (Exception ignored) { }
+                track = null;
+                return false;
+            }
+            // write() blocking sampai semua buffer diantre ke mixer.
+            int w = t.write(pcm, 0, pcm.length);
+            return w > 0;
+        } catch (Throwable t) {
+            android.util.Log.e(TAG, "play TTS gagal", t);
             track = null;
             return false;
         }
-        // write() blocking sampai semua buffer diantre ke mixer.
-        int w = t.write(pcm, 0, pcm.length);
-        return w > 0;
     }
 
     /** Berhenti + buang AudioTrack (aman dipanggil dua kali). */

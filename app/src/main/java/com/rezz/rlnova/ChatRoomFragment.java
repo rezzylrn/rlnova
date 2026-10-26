@@ -1358,6 +1358,9 @@ public class ChatRoomFragment extends Fragment {
     private volatile Thread ttsWorker;      // worker sintesis+playback aktif
     private volatile boolean speaking = false;
 
+    /** v1.1.13: toast "Preparing voice data…" hanya sekali per siklus ekstraksi. */
+    private volatile boolean espeakPrepareToastShown = false;
+
     /**
      * Tap tombol speaker: mulai/stop membacakan teks jawaban. Satu suara
      * dalam satu waktu — tap saat bicara = berhenti. Sintesis + playback
@@ -1400,19 +1403,43 @@ public class ChatRoomFragment extends Fragment {
                 toast("TTS voice is still downloading — check the Library tab");
                 return;
             }
-            // v1.1.12 FIX: coba ekstrak ulang DULU dari zip yang mungkin
-            // sudah ada (v1.1.11 gagal ekstrak karena prefix folder zip —
-            // zip-nya valid). Kalau ekstrak sukses → langsung bicara,
-            // JANGAN picu download ulang (itu yang bikin loop download
-            // tiap tap). Re-download hanya kalau zip memang tidak ada.
-            if (!TtsEngine.maybeExtractEspeak(act)) {
-                toast("Voice data incomplete — re-downloading espeak data");
-                if (getActivity() instanceof LibraryActivity) {
-                    ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperEspeak());
-                }
-                return;
+            // v1.1.13 FIX force close: JANGAN ekstrak di UI thread (click
+            // handler). Ekstraksi 355 file di main thread bikin ANR, dan
+            // bareng ekstraksi background dari onResume bisa menabrak folder
+            // .tmp yang sama (TtsEngine sekarang pakai lock global, tapi
+            // UI thread tetap tidak boleh ikut antre). Jalankan di worker,
+            // toast "Preparing voice data…" sekali, lalu kalau sukses
+            // LANJUT BICARA otomatis di alur yang sama — tanpa tap kedua.
+            final android.app.Activity fa = act;
+            if (!espeakPrepareToastShown) {
+                espeakPrepareToastShown = true;
+                toast("Preparing voice data…");
             }
-            // ekstrak sukses: isTtsReady sekarang true → jatuh ke bawah, bicara.
+            new Thread(() -> {
+                boolean ok = TtsEngine.maybeExtractEspeak(fa);
+                ui.post(() -> {
+                    if (!isAdded() || isDetached()) return;
+                    if (ok) {
+                        espeakPrepareToastShown = false;
+                        onSpeakClicked(btn, text); // lanjut bicara otomatis
+                        return;
+                    }
+                    // v1.1.12 dipertahankan: re-download hanya kalau zip
+                    // memang tidak ada (jangan picu loop download ulang).
+                    java.io.File z = new java.io.File(new java.io.File(
+                            fa.getFilesDir(), "models"), VoiceCatalog.PIPER_ESPEAK_ID + ".zip");
+                    if (z.exists()) {
+                        toast("Voice data could not be prepared — try again");
+                    } else {
+                        toast("Voice data incomplete — re-downloading espeak data");
+                        if (getActivity() instanceof LibraryActivity) {
+                            ((LibraryActivity) getActivity()).startVoiceDownload(VoiceCatalog.piperEspeak());
+                        }
+                    }
+                    espeakPrepareToastShown = false;
+                });
+            }, "rlnova-tts-prepare").start();
+            return;
         }
 
         speaking = true;
