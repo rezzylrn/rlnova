@@ -1103,6 +1103,19 @@ public class ChatRoomFragment extends Fragment {
                 android.widget.Toast.LENGTH_SHORT).show();
     }
 
+    /** DIAG-TEMP v1.1.16: toast diagnostik LENGTH_LONG di UI thread. */
+    private void diagToast(String s) {
+        if (!isAdded()) return;
+        final android.app.Activity a = getActivity();
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            try {
+                android.widget.Toast.makeText(a.getApplicationContext(), s,
+                        android.widget.Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) { }
+        });
+    }
+
     private String fmt1(double v) {
         return String.format(Locale.US, "%.1f", v);
     }
@@ -1367,6 +1380,7 @@ public class ChatRoomFragment extends Fragment {
      * jalan di worker thread (blocking), update UI via Handler.
      */
     private void onSpeakClicked(final android.widget.ImageButton btn, final String text) {
+        diagToast("Diag 0: tap diterima"); // DIAG-TEMP v1.1.16
         if (speaking) { stopSpeaking(); return; }
         if (ttsWorker != null && ttsWorker.isAlive()) return; // sintesis lain jalan
         android.app.Activity act = getActivity();
@@ -1448,6 +1462,13 @@ public class ChatRoomFragment extends Fragment {
         btn.setContentDescription("Stop reading");
         final android.app.Activity activity = act;
         ttsWorker = new Thread(() -> {
+            // DIAG-TEMP v1.1.16
+            diagToast("Diag 1: worker jalan, cek data");
+            final boolean wasIncomplete; // DIAG-TEMP v1.1.16
+            { // DIAG-TEMP v1.1.16
+                java.io.File d = VoiceCatalog.espeakDataDir(activity);
+                wasIncomplete = !VoiceCatalog.espeakDirComplete(d);
+            }
             try {
                 TtsEngine.loadLibrary();
             } catch (Throwable t) {
@@ -1455,17 +1476,62 @@ public class ChatRoomFragment extends Fragment {
                 speaking = false;
                 return;
             }
-            if (!ttsEngine.init(activity)) {
+            // v1.1.15 pre-flight + self-heal dipindah-cek eksplisit untuk diag (DIAG-TEMP v1.1.16):
+            if (!VoiceCatalog.piperOnnxFile(activity).exists()) {
+                diagToast("Diag 2 GAGAL: onnx hilang"); // DIAG-TEMP v1.1.16
                 ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
                 speaking = false;
                 return;
             }
+            if (VoiceCatalog.piperOnnxFile(activity).length() != VoiceCatalog.PIPER_ID_ONNX_SIZE_BYTES) {
+                diagToast("Diag 2 GAGAL: ukuran onnx salah"); // DIAG-TEMP v1.1.16
+                ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
+                speaking = false;
+                return;
+            }
+            if (!TtsEngine.maybeExtractEspeak(activity)) {
+                if (!VoiceCatalog.espeakZipOk(activity)) {
+                    diagToast("Diag 2 GAGAL: zip rusak"); // DIAG-TEMP v1.1.16
+                } else {
+                    // DIAG-TEMP v1.1.16: sebut file wajib mana yang kurang.
+                    java.io.File d = VoiceCatalog.espeakDataDir(activity);
+                    StringBuilder miss = new StringBuilder();
+                    for (String rel : new String[]{
+                            "lang", "lang/poz/id", "phontab", "phondata", "phonindex",
+                            "phondata-manifest", "intonations"}) {
+                        java.io.File f = new java.io.File(d, rel);
+                        if (!f.exists() || f.length() == 0) {
+                            if (miss.length() > 0) miss.append(", ");
+                            miss.append(rel);
+                        }
+                    }
+                    diagToast("Diag 2 GAGAL: espeak tidak lengkap (kurang: "
+                            + (miss.length() == 0 ? "tidak diketahui" : miss.toString()) + ")");
+                }
+                ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
+                speaking = false;
+                return;
+            }
+            diagToast("Diag 2: data OK (repair: " + (wasIncomplete ? "ya" : "tidak") + ")"); // DIAG-TEMP v1.1.16
+            diagToast("Diag 3: init mulai"); // DIAG-TEMP v1.1.16
+            boolean initOk = ttsEngine.init(activity);
+            if (!initOk) {
+                diagToast("Diag 4: init GAGAL (return false)"); // DIAG-TEMP v1.1.16
+                ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
+                speaking = false;
+                return;
+            }
+            diagToast("Diag 4: init OK sr=" + ttsEngine.sampleRate()); // DIAG-TEMP v1.1.16
+            diagToast("Diag 5: generate mulai"); // DIAG-TEMP v1.1.16
             GeneratedAudio audio = ttsEngine.generate(text);
             if (audio == null || audio.getSamples() == null || audio.getSamples().length == 0) {
+                diagToast("Diag 6: generate KOSONG"); // DIAG-TEMP v1.1.16
                 ui.post(() -> { toast("Speech synthesis failed"); resetSpeakButton(btn); });
                 speaking = false;
                 return;
             }
+            diagToast("Diag 6: audio " + audio.getSamples().length + " sampel"); // DIAG-TEMP v1.1.16
+            diagToast("Diag 7: play"); // DIAG-TEMP v1.1.16
             boolean ok = ttsEngine.play(audio);
             if (ok) {
                 // tunggu playback selesai ATAU stopPlayback() dari thread lain

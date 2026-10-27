@@ -60,6 +60,9 @@ public final class TtsEngine {
     /** True bila engine native termuat dan siap sintesis. */
     public synchronized boolean isReady() { return tts != null; }
 
+    /** DIAG-TEMP v1.1.16: sampleRate() untuk toast diag D4. */
+    public synchronized int sampleRate() { return tts != null ? tts.sampleRate() : -1; }
+
     /**
      * Muat model Piper VITS dari file .onnx + folder espeak-ng-data.
      * Blocking — WAJIB dari background thread.
