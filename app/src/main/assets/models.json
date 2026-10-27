@@ -41,6 +41,19 @@
       "description": "Popular 1B model from Meta. Smarter than the minis, still light on low-end phones."
     },
     {
+      "id": "qwen25-1.5b-q4km",
+      "name": "Qwen2.5 1.5B",
+      "tier": "MID",
+      "repo": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
+      "file": "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 986048768,
+      "minRamGb": 5,
+      "quant": "Q4_K_M",
+      "chatTemplate": "chatml",
+      "context": 4096,
+      "description": "Alibaba's 1.5B instruct model. A clear step up from the 1B tier, still fast on mid-range phones, and strong in Indonesian."
+    },
+    {
       "id": "gemma2-2b-q4km",
       "name": "Gemma 2 2B",
       "tier": "MID",
