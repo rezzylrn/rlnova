@@ -69,7 +69,11 @@ public final class TtsEngine {
         if (tts != null) return true;
         File onnx = VoiceCatalog.piperOnnxFile(ctx);
         File espeak = VoiceCatalog.espeakDataDir(ctx);
-        if (!onnx.exists() || !new File(espeak, "lang").exists()) return false;
+        // v1.1.15: PELINDUNG TERAKHIR sebelum new OfflineTts — sherpa memanggil
+        // espeak_Initialize(data_dir) dan _Exit(-1) proses kalau datanya parsial.
+        // Jadi init menolak jalan dengan folder espeak yang belum terverifikasi
+        // lengkap (set penuh, bukan cuma lang/).
+        if (!onnx.exists() || !VoiceCatalog.espeakDirComplete(espeak)) return false;
 
         // v1.1.13 pre-flight: jangan serahkan path tokens yang hilang/kosong
         // ke sherpa — tokensPath() mengekstrak dari assets, tapi kalau hasilnya
@@ -160,9 +164,13 @@ public final class TtsEngine {
     /**
      * Setelah espeak-ng-data.zip selesai di-download (folder "models/
      * voice-piper-id-espeak.zip"), ekstrak isinya ke folder
-     * filesDir/models/voice-piper-id-espeak/. Idempotent — lewati bila
-     * folder sudah berisi data (subfolder "lang" ada).
-     * @return true bila folder siap dipakai.
+     * filesDir/models/voice-piper-id-espeak/.
+     *
+     * v1.1.15 self-heal: idempotent HANYA bila folder dst lengkap (set wajib
+     * penuh). Folder yang ada tapi PARSIAL dihapus dan di-extract ulang dari
+     * zip — bukan diloloskan selamanya (dulu cukup lang/ ada dan dst parsial
+     * lolos selamanya, lalu membunuh proses di espeak_Initialize).
+     * @return true bila folder siap dipakai (lengkap).
      */
     public static boolean maybeExtractEspeak(Context ctx) {
         // v1.1.13: seluruh ekstraksi (termasuk cek-awal dan migrasi .part)
@@ -176,7 +184,11 @@ public final class TtsEngine {
 
     private static boolean maybeExtractEspeakLocked(Context ctx) {
         File dst = VoiceCatalog.espeakDataDir(ctx);
-        if (new File(dst, "lang").exists()) return true;
+        // v1.1.15: "lang" saja TIDAK cukup — dst parsial (lang/ ada, phontab/
+        // phondata/... hilang atau 0 byte) dulu lolos gate ini selamanya lalu
+        // membunuh proses di espeak_Initialize. Sekarang: hanya lolos kalau
+        // SET LENGKAP terverifikasi; kalau tidak, delete dst dan re-extract.
+        if (VoiceCatalog.espeakDirComplete(dst)) return true;
         File models = new File(ctx.getFilesDir(), "models");
         // v1.1.11 migrasi satu kali: user versi lama bisa punya ".part" espeak
         // yang sudah selesai (DONE tapi tidak pernah di-rename oleh bug lama).
@@ -192,6 +204,10 @@ public final class TtsEngine {
             }
         }
         if (!zip.exists()) return false;
+        // v1.1.15: zip harus benar-benar utuh (ukuran tepat + entri wajib ada
+        // di central directory) SEBELUM dipakai memperbaiki dst parsial.
+        // Zip rusak/parsial → fall through ke re-download path.
+        if (!VoiceCatalog.espeakZipOk(ctx)) return false;
         File tmp = new File(dst.getParentFile(), dst.getName() + ".tmp");
         if (tmp.exists()) deleteRecursive(tmp);
         if (!tmp.exists() && !tmp.mkdirs()) return false;
@@ -259,8 +275,11 @@ public final class TtsEngine {
                 z2.closeEntry();
             }
             z2.close();
-            // tandai selesai: folder "lang" harus ada — verifikasi sebelum rename
-            if (!new File(tmp, "lang").exists()) {
+            // v1.1.15: verifikasi SET LENGKAP di tmp sebelum rename (bukan cuma
+            // lang/). Gagal → tmp dibuang, return false → pemanggil (ChatRoom/
+            // Library) trigger re-download espeak.
+            if (!VoiceCatalog.espeakDirComplete(tmp)) {
+                android.util.Log.e(TAG, "extract espeak: hasil tmp tidak lengkap, dibuang");
                 deleteRecursive(tmp);
                 return false;
             }

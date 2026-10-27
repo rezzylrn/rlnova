@@ -87,12 +87,73 @@ public final class VoiceCatalog {
                 PIPER_ESPEAK_SIZE_BYTES, PIPER_ESPEAK_URL, 3);
     }
 
-    /** Kedua bagian TTS siap (onnx + folder espeak-ng-data terekstrak). */
+    /** v1.1.15: file yang WAJIB ada & >0 byte agar espeak_Initialize tidak memanggil _Exit. */
+    private static final String[] ESPEAK_REQUIRED_FILES = {
+            "lang", "lang/poz/id", "phontab", "phondata", "phonindex",
+            "phondata-manifest", "intonations"
+    };
+
+    /** v1.1.15: subset untuk cek central-directory zip — folder "lang" DIBUANG
+     * karena tidak punya entri sendiri di zip resmi (bukti: 392 entri tanpa
+     * "espeak-ng-data/lang"); kalau ikut dicek, zip utuh dianggap rusak dan
+     * self-heal gagal selamanya. */
+    private static final String[] ESPEAK_REQUIRED_ZIP_FILES = {
+            "lang/poz/id", "phontab", "phondata", "phonindex",
+            "phondata-manifest", "intonations"
+    };
+
+    /** v1.1.15: folder espeak LENGKAP? (set penuh, bukan cuma lang/ yang boleh parsial.) */
+    public static boolean espeakDataComplete(Context ctx) {
+        return espeakDirComplete(espeakDataDir(ctx));
+    }
+
+    /** v1.1.15: verifikasi kelengkapan folder espeak mana pun (dst atau tmp hasil ekstraksi). */
+    public static boolean espeakDirComplete(File dir) {
+        if (dir == null || !dir.isDirectory()) return false;
+        for (String rel : ESPEAK_REQUIRED_FILES) {
+            File f = new File(dir, rel);
+            if (!f.exists() || f.length() == 0) return false;
+        }
+        return true;
+    }
+
+    /**
+     * v1.1.15: zip espeak utuh? Ukuran tepat + semua entri wajib ada lewat
+     * central directory (murah — tanpa membuka/mengekstrak isi file).
+     */
+    public static boolean espeakZipOk(Context ctx) {
+        File zip = new File(new File(ctx.getFilesDir(), "models"), PIPER_ESPEAK_ID + ".zip");
+        if (!zip.exists() || zip.length() != PIPER_ESPEAK_SIZE_BYTES) return false;
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zip)) {
+            // Hanya entri FILE wajib — "lang" itu folder, sering tidak punya
+            // entri sendiri di zip (terverifikasi: zip resmi 392 entri, tanpa
+            // "espeak-ng-data/lang", tapi "espeak-ng-data/lang/poz/id" ada).
+            for (String rel : ESPEAK_REQUIRED_ZIP_FILES) {
+                java.util.zip.ZipEntry e = zf.getEntry("espeak-ng-data/" + rel);
+                if (e == null || e.getSize() <= 0) return discardBrokenZip(zip);
+            }
+            return true;
+        } catch (Exception e) {
+            return discardBrokenZip(zip);
+        }
+    }
+
+    /**
+     * v1.1.15: zip yang gagal verifikasi (ukuran salah / entri wajib hilang /
+     * central directory korup) DIHAPUS sebelum return false — kalau dibiarkan,
+     * ChatRoom melihat zip masih ada dan selamanya menampilkan "try again"
+     * tanpa pernah re-download (self-heal tidak pernah sampai ke sumber data).
+     */
+    private static boolean discardBrokenZip(File zip) {
+        try { zip.delete(); } catch (Exception ignored) { }
+        return false;
+    }
+
+    /** Kedua bagian TTS siap (onnx utuh + folder espeak-ng-data LENGKAP, bukan parsial). */
     public static boolean isTtsReady(Context ctx) {
         return piperOnnxFile(ctx).exists()
                 && piperIdOnnxSizeOk(ctx)
-                && new File(ctx.getFilesDir(),
-                        "models/" + PIPER_ESPEAK_ID + "/lang").exists();
+                && espeakDataComplete(ctx);
     }
 
     /** File .onnx TTS di filesDir/models/. */
