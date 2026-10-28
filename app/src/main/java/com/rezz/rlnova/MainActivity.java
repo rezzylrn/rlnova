@@ -137,7 +137,86 @@ public class MainActivity extends Activity {
                 .start();
 
         startDots();
+
+        // DIAG-TEMP v1.1.17: kalau proses mati di tengah native TTS di run
+        // sebelumnya, worker menulis marker stage. Di sini: baca, hapus, // DIAG-TEMP v1.1.17
+        // lalu tampilkan dialog logcat (AT MOST once per launch). Semua // DIAG-TEMP v1.1.17
+        // try/catch — kegagalan logcat/dialog TIDAK PERNAH crash launch. // DIAG-TEMP v1.1.17
+        maybeShowTtsCrashDialog(); // DIAG-TEMP v1.1.17
     }
+
+    // ==================== DIAG-TEMP v1.1.17 ==================== // DIAG-TEMP v1.1.17
+    // Dialog logcat: hanya kalau crash marker dari run sebelumnya ada. // DIAG-TEMP v1.1.17
+    private void maybeShowTtsCrashDialog() { // DIAG-TEMP v1.1.17
+        try { // DIAG-TEMP v1.1.17
+            java.io.File marker = new java.io.File(getFilesDir(), "tts-crash-marker.txt"); // DIAG-TEMP v1.1.17
+            if (!marker.exists()) return; // DIAG-TEMP v1.1.17
+            String markerText = ""; // DIAG-TEMP v1.1.17
+            try (java.io.BufferedReader r = new java.io.BufferedReader( // DIAG-TEMP v1.1.17
+                    new java.io.FileReader(marker))) { // DIAG-TEMP v1.1.17
+                markerText = r.readLine(); // DIAG-TEMP v1.1.17
+                if (markerText == null) markerText = ""; // DIAG-TEMP v1.1.17
+            } catch (Throwable ignored) { } // DIAG-TEMP v1.1.17
+            marker.delete(); // DIAG-TEMP v1.1.17: hapus segera, dialog max 1x per launch
+            final String stage = markerText; // DIAG-TEMP v1.1.17
+            final java.util.List<String> lines = collectFilteredLogcat(); // DIAG-TEMP v1.1.17
+            ui.post(() -> showTtsCrashDialog(stage, lines)); // DIAG-TEMP v1.1.17
+        } catch (Throwable ignored) { } // DIAG-TEMP v1.1.17: never crash the launch
+    } // DIAG-TEMP v1.1.17
+
+    /** `logcat -d`, filter kata kunci native TTS, max 60 baris terakhir. */ // DIAG-TEMP v1.1.17
+    private java.util.List<String> collectFilteredLogcat() { // DIAG-TEMP v1.1.17
+        java.util.List<String> out = new java.util.ArrayList<>(); // DIAG-TEMP v1.1.17
+        try { // DIAG-TEMP v1.1.17
+            Process p = Runtime.getRuntime().exec(new String[]{"logcat", "-d"}); // DIAG-TEMP v1.1.17
+            java.io.BufferedReader br = new java.io.BufferedReader( // DIAG-TEMP v1.1.17
+                    new java.io.InputStreamReader(p.getInputStream())); // DIAG-TEMP v1.1.17
+            String l; // DIAG-TEMP v1.1.17
+            java.util.List<String> filtered = new java.util.ArrayList<>(); // DIAG-TEMP v1.1.17
+            while ((l = br.readLine()) != null) { // DIAG-TEMP v1.1.17
+                String low = l.toLowerCase(java.util.Locale.US); // DIAG-TEMP v1.1.17
+                if (low.contains("sherpa") || low.contains("espeak") || low.contains("onnx") // DIAG-TEMP v1.1.17
+                        || low.contains("fatal") || low.contains("signal") || low.contains("abort") // DIAG-TEMP v1.1.17
+                        || low.contains("jni") || low.contains("onnxruntime")) { // DIAG-TEMP v1.1.17
+                    filtered.add(l); // DIAG-TEMP v1.1.17
+                } // DIAG-TEMP v1.1.17
+            } // DIAG-TEMP v1.1.17
+            p.destroy(); // DIAG-TEMP v1.1.17
+            int from = Math.max(0, filtered.size() - 60); // DIAG-TEMP v1.1.17: last 60 lines max
+            out.addAll(filtered.subList(from, filtered.size())); // DIAG-TEMP v1.1.17
+        } catch (Throwable ignored) { } // DIAG-TEMP v1.1.17: any failure -> empty list
+        return out; // DIAG-TEMP v1.1.17
+    } // DIAG-TEMP v1.1.17
+
+    private void showTtsCrashDialog(String stage, java.util.List<String> lines) { // DIAG-TEMP v1.1.17
+        try { // DIAG-TEMP v1.1.17
+            StringBuilder body = new StringBuilder(); // DIAG-TEMP v1.1.17
+            if (lines.isEmpty()) { // DIAG-TEMP v1.1.17
+                body.append("Log kosong — tidak ada baris error dari proses."); // DIAG-TEMP v1.1.17
+            } else { // DIAG-TEMP v1.1.17
+                for (String l : lines) body.append(l).append('\n'); // DIAG-TEMP v1.1.17
+            } // DIAG-TEMP v1.1.17
+            final String fullText = "TTS mati di tahap: " + stage + "\n\n" + body; // DIAG-TEMP v1.1.17
+            android.app.AlertDialog d = new android.app.AlertDialog.Builder(this) // DIAG-TEMP v1.1.17
+                    .setTitle("TTS mati di tahap: " + stage) // DIAG-TEMP v1.1.17
+                    .setMessage(body.toString()) // DIAG-TEMP v1.1.17
+                    .setPositiveButton("[Salin log]", (dlg, which) -> { // DIAG-TEMP v1.1.17
+                        try { // DIAG-TEMP v1.1.17
+                            android.content.ClipboardManager cm = // DIAG-TEMP v1.1.17
+                                    (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE); // DIAG-TEMP v1.1.17
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText( // DIAG-TEMP v1.1.17
+                                    "rlnova-tts-crash", fullText)); // DIAG-TEMP v1.1.17
+                            android.widget.Toast.makeText(this, "Log tersalin", // DIAG-TEMP v1.1.17
+                                    android.widget.Toast.LENGTH_SHORT).show(); // DIAG-TEMP v1.1.17
+                        } catch (Throwable ignored) { } // DIAG-TEMP v1.1.17
+                    }) // DIAG-TEMP v1.1.17
+                    .setNegativeButton("[Tutup]", (dlg, which) -> dlg.dismiss()) // DIAG-TEMP v1.1.17
+                    .create(); // DIAG-TEMP v1.1.17
+            d.setCanceledOnTouchOutside(false); // DIAG-TEMP v1.1.17: non-cancellable
+            d.show(); // DIAG-TEMP v1.1.17
+        } catch (Throwable ignored) { } // DIAG-TEMP v1.1.17: never crash the launch
+    } // DIAG-TEMP v1.1.17
+    // =================== AKHIR DIAG-TEMP v1.1.17 ==================== // DIAG-TEMP v1.1.17
 
     @Override
     protected void onStart() {

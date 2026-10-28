@@ -1472,24 +1472,28 @@ public class ChatRoomFragment extends Fragment {
             try {
                 TtsEngine.loadLibrary();
             } catch (Throwable t) {
+                deleteTtsCrashMarker(); // DIAG-TEMP v1.1.17
                 ui.post(() -> { toast("TTS engine failed to load"); resetSpeakButton(btn); });
                 speaking = false;
                 return;
             }
             // v1.1.15 pre-flight + self-heal dipindah-cek eksplisit untuk diag (DIAG-TEMP v1.1.16):
             if (!VoiceCatalog.piperOnnxFile(activity).exists()) {
+                deleteTtsCrashMarker(); // DIAG-TEMP v1.1.17
                 diagToast("Diag 2 GAGAL: onnx hilang"); // DIAG-TEMP v1.1.16
                 ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
                 speaking = false;
                 return;
             }
             if (VoiceCatalog.piperOnnxFile(activity).length() != VoiceCatalog.PIPER_ID_ONNX_SIZE_BYTES) {
+                deleteTtsCrashMarker(); // DIAG-TEMP v1.1.17
                 diagToast("Diag 2 GAGAL: ukuran onnx salah"); // DIAG-TEMP v1.1.16
                 ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
                 speaking = false;
                 return;
             }
             if (!TtsEngine.maybeExtractEspeak(activity)) {
+                deleteTtsCrashMarker(); // DIAG-TEMP v1.1.17
                 if (!VoiceCatalog.espeakZipOk(activity)) {
                     diagToast("Diag 2 GAGAL: zip rusak"); // DIAG-TEMP v1.1.16
                 } else {
@@ -1514,8 +1518,10 @@ public class ChatRoomFragment extends Fragment {
             }
             diagToast("Diag 2: data OK (repair: " + (wasIncomplete ? "ya" : "tidak") + ")"); // DIAG-TEMP v1.1.16
             diagToast("Diag 3: init mulai"); // DIAG-TEMP v1.1.16
+            writeTtsCrashMarker("init"); // DIAG-TEMP v1.1.17
             boolean initOk = ttsEngine.init(activity);
             if (!initOk) {
+                deleteTtsCrashMarker(); // DIAG-TEMP v1.1.17
                 diagToast("Diag 4: init GAGAL (return false)"); // DIAG-TEMP v1.1.16
                 ui.post(() -> { toast("Could not load the TTS voice model"); resetSpeakButton(btn); });
                 speaking = false;
@@ -1523,15 +1529,18 @@ public class ChatRoomFragment extends Fragment {
             }
             diagToast("Diag 4: init OK sr=" + ttsEngine.sampleRate()); // DIAG-TEMP v1.1.16
             diagToast("Diag 5: generate mulai"); // DIAG-TEMP v1.1.16
+            writeTtsCrashMarker("generate"); // DIAG-TEMP v1.1.17
             GeneratedAudio audio = ttsEngine.generate(text);
             if (audio == null || audio.getSamples() == null || audio.getSamples().length == 0) {
                 diagToast("Diag 6: generate KOSONG"); // DIAG-TEMP v1.1.16
+                deleteTtsCrashMarker(); // DIAG-TEMP v1.1.17: gagal graceful -> marker dihapus
                 ui.post(() -> { toast("Speech synthesis failed"); resetSpeakButton(btn); });
                 speaking = false;
                 return;
             }
             diagToast("Diag 6: audio " + audio.getSamples().length + " sampel"); // DIAG-TEMP v1.1.16
             diagToast("Diag 7: play"); // DIAG-TEMP v1.1.16
+            writeTtsCrashMarker("play"); // DIAG-TEMP v1.1.17
             boolean ok = ttsEngine.play(audio);
             if (ok) {
                 // tunggu playback selesai ATAU stopPlayback() dari thread lain
@@ -1540,6 +1549,7 @@ public class ChatRoomFragment extends Fragment {
                 }
             }
             ttsEngine.stopPlayback();
+            deleteTtsCrashMarker(); // DIAG-TEMP v1.1.17: sukses penuh -> marker dihapus
             ui.post(() -> resetSpeakButton(btn));
             speaking = false;
         }, "rlnova-tts");
@@ -1551,6 +1561,36 @@ public class ChatRoomFragment extends Fragment {
         ttsEngine.stopPlayback();
         if (ttsWorker != null) ttsWorker.interrupt();
     }
+
+    // ==================== DIAG-TEMP v1.1.17 ==================== // DIAG-TEMP v1.1.17
+    // Crash marker: file kecil di filesDir yang MENANDAI tahap TTS yang // DIAG-TEMP v1.1.17
+    // sedang dijalankan. Ditulis sinkron (write+flush+close) di worker // DIAG-TEMP v1.1.17
+    // thread sebelum masuk native init/generate/play; DIHAPUS saat sukses // DIAG-TEMP v1.1.17
+    // penuh maupun gagal gracefully — jadi marker hanya selamat kalau // DIAG-TEMP v1.1.17
+    // PROSES benar-benar mati di tengah native call. Dibaca + dihapus di // DIAG-TEMP v1.1.17
+    // MainActivity.onCreate untuk menampilkan dialog logcat. // DIAG-TEMP v1.1.17
+    private static final String TTS_CRASH_MARKER = "tts-crash-marker.txt"; // DIAG-TEMP v1.1.17
+
+    private void writeTtsCrashMarker(String stage) { // DIAG-TEMP v1.1.17
+        try { // DIAG-TEMP v1.1.17
+            android.app.Activity a = getActivity(); // DIAG-TEMP v1.1.17
+            if (a == null) return; // DIAG-TEMP v1.1.17
+            java.io.File f = new java.io.File(a.getFilesDir(), TTS_CRASH_MARKER); // DIAG-TEMP v1.1.17
+            java.io.FileWriter w = new java.io.FileWriter(f, false); // DIAG-TEMP v1.1.17
+            w.write("stage=" + stage + " ts=" + System.currentTimeMillis()); // DIAG-TEMP v1.1.17
+            w.flush(); // DIAG-TEMP v1.1.17
+            w.close(); // DIAG-TEMP v1.1.17
+        } catch (Throwable ignored) { } // DIAG-TEMP v1.1.17: jangan pernah matikan worker karena marker
+    } // DIAG-TEMP v1.1.17
+
+    private void deleteTtsCrashMarker() { // DIAG-TEMP v1.1.17
+        try { // DIAG-TEMP v1.1.17
+            android.app.Activity a = getActivity(); // DIAG-TEMP v1.1.17
+            if (a == null) return; // DIAG-TEMP v1.1.17
+            new java.io.File(a.getFilesDir(), TTS_CRASH_MARKER).delete(); // DIAG-TEMP v1.1.17
+        } catch (Throwable ignored) { } // DIAG-TEMP v1.1.17
+    } // DIAG-TEMP v1.1.17
+    // =================== AKHIR DIAG-TEMP v1.1.17 =================== // DIAG-TEMP v1.1.17
 
     /** Kosongkan TTS native (dipanggil di onDestroy — background thread). */
     private void freeTts() {
