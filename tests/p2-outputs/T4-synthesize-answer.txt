@@ -1,0 +1,13 @@
+<think>
+Okay, the user wants me to combine information from the provided sources into one answer, including the numbered claims. Let me start by understanding the question: they want to know the relationship between privacy, inferensi on-device, and a local language model.
+
+Looking at the sources, source [2] defines inferensi on-device as running LLMs on devices without sending data to a server. That's a direct connection between privacy and the model's operation. Source [3] explains how the model is stored locally, so the data isn't sent, which relates to privacy. Also, source [4] mentions that the model can be third-party and that input devices like microphones and keyboards are still considered part of the input, maintaining privacy.
+
+I need to structure this into a coherent answer. Start by stating the definition of inferensi on-device and how it relates to privacy. Then mention the model's storage and no data sent, which supports privacy. Finally, note that input devices are still considered part of the system, reinforcing privacy. Each claim should be numbered with its source. Let me check again to ensure all points are covered without conflicting information.
+</think>
+
+Bagaimana hubungan privasi, inferensi on-device, dan model bahasa lokal?  
+1. **Privasi**: Inferensi on-device menghilangkan kebutuhan mengirim data ke server, memastikan privasi pengguna.  
+2. **Inferensi on-device**: Model bahasa lokal dijalankan langsung di perangkat (ponsel/laptop) tanpa mengirim pertanyaan ke server (sumber [2]).  
+3. **Model bahasa lokal**: File model (misal GGUF) disimpan lokal, dan proses menghasilkan jawaban token demi token secara lokal (sumber [3]).  
+4. **Input lain**: Mikrofon dan keyboard tetap dianggap jalur input perangkat, mempertahankan privasi

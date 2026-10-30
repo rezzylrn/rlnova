@@ -1,0 +1,25 @@
+<think>
+Okay, let's tackle this. The user wants me to compare the two approaches: inferensi on-device and inferensi cloud. They need the same information from the sources provided, including their similarities and differences, with their numbering.
+
+First, I need to recall each source's content. Source [1] defines inferensi on-device as running LLMs on devices without server data, while [2] explains that on-device inferensi avoids sending user texts to servers. Source [3] describes how on-device processes are done, including local file storage and no data sent. Source [4] talks about privacy principles, like not storing user text on the device.
+
+Now, let's break down the comparison. 
+
+Similarities:
+1. Both methods involve processing models locally. [1] and [2] mention no server data. [3] confirms local processing. [4] supports this by stating privacy principles.
+
+Differences:
+1. On-device processes are done locally with no data sent. [1] and [2] state this. [3] supports it. [4] adds privacy.
+
+Wait, source [2] specifically mentions that on-device apps don't ask for internet permission for downloading models, not for processing. So that's a difference. Also, [4] emphasizes privacy principles, which is a difference.
+
+So the answers should list these points with their respective sources. Make sure not to include any information not in the sources. Check for any contradictions or conflicts. All sources are about these two methods, so they should cover all points.
+</think>
+
+**Persamaan:**  
+1. **Tidak Memerlukan Data Server:**  
+   - [1] dan [2] menyatakan bahwa inferensi on-device tidak mengirim teks pengguna ke server.  
+   - [3] juga memperkenalkan proses lokal yang menghindari data keluar dari perangkat.  
+
+**Perbedaan:**  
+1.

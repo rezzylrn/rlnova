@@ -1,0 +1,15 @@
+<|im_start|>system
+Anda asisten riset offline. Jawab HANYA dari potongan sumber berikut. Setiap potongan diberi nomor [1], [2], dst. Saat menyatakan fakta dari potongan, sertakan nomornya seperti [1]. JANGAN memakai pengetahuan di luar potongan. JANGAN mengarang. Jika potongan tidak cukup untuk menjawab, atau sumber saling bertentangan, katakan secara jujur bahwa buktinya tidak cukup atau bertentangan. Jawab dalam bahasa pertanyaan.
+
+[1] (doc-02-llama-cpp-dan-format-gguf#c02)
+[Format GGUF] GGUF (GPT-Generated Unified Format) adalah format file biner untuk menyimpan model yang sudah siap inferensi. Satu file GGUF berisi bobot model, tokenizer, dan metadata (arsitektur, jumlah parameter, template chat) dalam satu berkas tunggal sehingga mudah didistribusikan dan dimuat. GGUF menggantikan format lama GGML.
+
+[2] (doc-01-inferensi-on-device#c02)
+[Cara kerja] Pada inferensi on-device, file model (misalnya format GGUF) disimpan di penyimpanan perangkat. Saat pengguna mengajukan pertanyaan, aplikasi: (1) merangkai prompt dari pertanyaan dan instruksi, (2) menjalankan model menggunakan CPU atau GPU perangkat, (3) menghasilkan jawaban token demi token secara lokal. Tidak ada paket data yang keluar dari perangkat selama proses ini berlangsung.
+
+<|im_end|>
+<|im_start|>user
+Jelaskan jawaban pertanyaan berikut berdasarkan sumber di atas. Sertakan nomor sitasi.
+
+Pertanyaan: Mengapa GGUF adalah format kompresi video?<|im_end|>
+<|im_start|>assistant

@@ -1,0 +1,47 @@
+=== T1-factual ===
+
+=== T2-explain ===
+
+=== T3-compare ===
+<think>
+Okay, let's tackle this question. The user wants me to compare the views from sources [1], [2], [3], and [4] regarding inferensi on-device and inferensi cloud. 
+
+First, I need to understand what each source is saying. 
+
+From source [1], the main points are that inferensi on-device runs models directly on the user's device without sending data to a server. The contrast is with inferensi cloud, which uses the central server for processing and sends data over the internet. So the comparison here is straightforward: on-device vs cloud.
+
+Source [2] mentions that for changes or updates, additional documents (like local knowledge packages) are needed. Also, on-device apps don't require internet for downloading models during installation, unlike cloud apps which use the internet for that. So this highlights the difference in data transmission and model access.
+
+Source [3] explains the workflow: model files are stored locally, prompts are processed on the device, and no data is sent. This is the core of on-device inference. The cloud uses the server for processing and data sent over the internet.
+
+Source [4] discusses privacy principles: local AI apps ensure user data isn't transmitted to the server, unlike cloud services which might store data for future use. This is a privacy point supporting the on-device approach.
+
+Now, I need to structure the answer with the points from each source. For each point, note the similarities and differences. Make sure to cite the correct sources. Let me check again to ensure I didn't miss any points. Yep, all sources cover the necessary aspects: workflow, data transmission, privacy, and model access. Each point is properly cited.
+</think>
+
+**Persamaan:**  
+1. **Konten Analisis:** Kedua inferensi on-device dan inferensi cloud menggunakan model AI (misalnya LLM) untuk menjalankan perencanaan atau prediksi.  
+2. **Trans
+> EOF by user
+
+
+
+=== T4-synthesize ===
+<think>
+Okay, let's tackle this question. The user wants to combine information from the provided sources into a comprehensive answer, including numbered claims.
+
+First, I need to recall each source's content. 
+
+Starting with source [1], it mentions that on-device inference eliminates the need for user data to the server. Also, it notes that on-device applications typically only ask for internet permissions for downloading models during installation, not for processing questions. That's about privacy and data handling.
+
+Source [2] defines on-device inference as running LLM models on the device without data transfer. It contrasts this with cloud inference, which runs on a server and sends data over the internet. So, this defines the two methods, which is important for privacy.
+
+Source [3] explains how on-device processes involve saving model files locally, using the device's CPU/GPU, and not sending any data. This supports the idea of local processing and no data transfer.
+
+Source [4] talks about privacy on-device: the app knows what's being used, and the model's data is protected. Also, input like microphones and keyboards remain as input, not linked to internet. This addresses privacy concerns.
+
+Now, I need to structure these into a coherent answer. Start with the definition of on-device inference, then contrast it with cloud inference. Mention how data is handled locally and the privacy aspects. Include
+=== T6-falsepremise ===
+
+=== T7-en-factual ===
+

@@ -19,3 +19,6 @@ HERMES_BRIEF_*.md
 .DS_Store
 *.swp
 .idea/
+
+# P2 test artifacts: outputs/results yes, model binary no
+research-test/*.gguf

@@ -1,0 +1,7 @@
+<think>
+Okay, the user is asking why GGUF is compression for video, and I need to include the source numbers. Let me check the sources provided.
+
+From source [1], it explains that GGUF is a binary format to store models, including weights, tokenizers, and metadata. It mentions that it replaces GGML. So, the main point here is the format's purpose for model storage. There's no specific mention of video compression in the sources. Source [2] talks about inference on-device, CPU/GPU, and local token generation. That's about how the model is used, not compression. Since neither source directly addresses video compression, I should note that. The user's question is about the reason for compression, but the sources don't provide that detail. So, I'll state that the information is not found in the sources.
+</think>
+
+Buku sumber tidak menyertakan jawaban mengenai mengapa GGUF adalah format kompresi video. [end of text]

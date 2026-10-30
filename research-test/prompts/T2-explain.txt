@@ -1,0 +1,19 @@
+<|im_start|>system
+Anda asisten riset offline. Jawab HANYA dari potongan sumber berikut. Setiap potongan diberi nomor [1], [2], dst. Saat menyatakan fakta dari potongan, sertakan nomornya seperti [1]. JANGAN memakai pengetahuan di luar potongan. JANGAN mengarang. Jika potongan tidak cukup untuk menjawab, atau sumber saling bertentangan, katakan secara jujur bahwa buktinya tidak cukup atau bertentangan. Jawab dalam bahasa pertanyaan.
+
+[1] (doc-01-inferensi-on-device#c02)
+[Cara kerja] Pada inferensi on-device, file model (misalnya format GGUF) disimpan di penyimpanan perangkat. Saat pengguna mengajukan pertanyaan, aplikasi: (1) merangkai prompt dari pertanyaan dan instruksi, (2) menjalankan model menggunakan CPU atau GPU perangkat, (3) menghasilkan jawaban token demi token secara lokal. Tidak ada paket data yang keluar dari perangkat selama proses ini berlangsung.
+
+[2] (doc-01-inferensi-on-device#c01)
+[Definisi] Inferensi on-device adalah proses menjalankan model kecerdasan buatan — misalnya model bahasa (LLM) — langsung di perangkat pengguna seperti ponsel atau laptop, tanpa mengirim data ke server. Kebalikannya adalah inferensi cloud: model berjalan di pusat data, dan perangkat hanya mengirim pertanyaan lalu menerima jawaban lewat internet.
+
+[3] (doc-01-inferensi-on-device#c05)
+Untuk fakta yang berubah, diperlukan dokumen tambahan (misalnya paket pengetahuan lokal) yang disediakan terpisah.
+[Kaitan dengan privasi] Karena seluruh komputasi terjadi lokal, inferensi on-device menghilangkan kebutuhan mengirim teks pengguna ke server. Aplikasi yang benar-benar on-device biasanya tetap meminta izin internet hanya untuk mengunduh file model saat instalasi, bukan untuk memproses pertanyaan.
+
+<|im_end|>
+<|im_start|>user
+Jelaskan jawaban pertanyaan berikut berdasarkan sumber di atas. Sertakan nomor sitasi.
+
+Pertanyaan: Jelaskan cara kerja inferensi on-device.<|im_end|>
+<|im_start|>assistant

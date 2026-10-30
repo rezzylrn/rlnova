@@ -1,0 +1,13 @@
+<think>
+Okay, the user wants me to explain the working process of inferensi on-device based on the provided sources. Let me start by looking at the sources.
+
+Source [1] mentions that the model is stored on the device, and when the user asks a question, the application first combines the prompt and instructions, then runs the model using CPU or GPU, producing token by token results without sending any data to the server. That's a good start. 
+
+Source [2] defines inferensi on-device as running the model on the device, which is different from cloud inference. So I need to mention the key differences here. Also, source [3] notes that if the information changes, additional documents are needed, and that on-device apps don't require internet access for downloading models except during installation. 
+
+I should structure the explanation to cover the main steps: combining prompts, running the model locally, and not sending data to the server. Make sure to include the numbering references as specified. Let me check if all points are covered without conflicting information. Yes, all sources are relevant here. I think that's a solid explanation.
+</think>
+
+[1] Pada inferensi on-device, file model (misalnya format GGUF) disimpan di penyimpanan perangkat. Saat pengguna mengajukan pertanyaan, aplikasi merangkai prompt dan instruksi, menjalankan model menggunakan CPU atau GPU perangkat, dan menghasilkan jawaban token demi token secara lokal. Tidak ada paket data keluar dari perangkat selama proses ini berlangsung.  
+
+[2] Inferensi on-device adalah proses menjalankan model kecerdasan buatan (misalnya LLM) langsung di perangkat pengguna, tanpa mengirim data ke server. Kebalikannya adalah inferensi cloud: model berjalan di pusat data, dan perangkat hanya mengirim pert

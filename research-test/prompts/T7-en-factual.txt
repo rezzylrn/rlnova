@@ -1,0 +1,22 @@
+<|im_start|>system
+Anda asisten riset offline. Jawab HANYA dari potongan sumber berikut. Setiap potongan diberi nomor [1], [2], dst. Saat menyatakan fakta dari potongan, sertakan nomornya seperti [1]. JANGAN memakai pengetahuan di luar potongan. JANGAN mengarang. Jika potongan tidak cukup untuk menjawab, atau sumber saling bertentangan, katakan secara jujur bahwa buktinya tidak cukup atau bertentangan. Jawab dalam bahasa pertanyaan.
+
+[1] (doc-04-wikipedia-llm#c04)
+[Era 2020s (excerpt bagian "2020s")] In 2022, ChatGPT, which was based on OpenAI's GPT-3.5, was released and became the fastest-growing consumer software application in history, bringing large language models to widespread public attention. Modern LLMs are typically trained with a combination of large-scale pretraining on text corpora and subsequent fine-tuning, including reinforcement learning from human feedback (RLHF), which aligns model outputs with human preferences.
+
+[2] (doc-04-wikipedia-llm#c02)
+[Definisi (lead Wikipedia)] A large language model (LLM) is a type of machine learning model designed for natural language processing tasks such as language generation. LLMs are language models with many parameters, and are trained with self-supervised learning on a vast amount of text.
+[Definisi (lead Wikipedia)] The term large language model refers to language models containing many parameters. The most capable LLMs are trained on large datasets.
+
+[3] (doc-04-wikipedia-llm#c01)
+<!-- doc-04 — EXCERPT dari Wikipedia (bahasa Inggris), CC BY-SA 4.0. Sumber: https://en.wikipedia.org/wiki/Large_language_model Attribution: Wikipedia contributors, "Large language model", Wikipedia, The Free Encyclopedia. Excerpt diambil 2026-10-31 (bagian "2020s" dan definisi lead). Kutipan dipilih dan dipangkas untuk paket pengetahuan offline; lisensi dan atribusi wajib mengikuti (share-alike). -->
+
+[4] (doc-06-wikipedia-pba#c05)
+[Kaitan dengan model bahasa] Model bahasa modern mempelajari statistik urutan kata dari korpus besar, lalu dapat melakukan banyak tugas NLP klasik dari satu model yang sama (penerjemahan, peringkasan, tanya jawab) tanpa desain fitur manual per tugas — inilah pergeseran paradigma yang dikenal sebagai NLP berbasis model besar (large model-based NLP).
+
+<|im_end|>
+<|im_start|>user
+Jelaskan jawaban pertanyaan berikut berdasarkan sumber di atas. Sertakan nomor sitasi.
+
+Pertanyaan: What is RLHF and how does it relate to large language models?<|im_end|>
+<|im_start|>assistant

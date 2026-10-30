@@ -1,0 +1,22 @@
+<|im_start|>system
+Anda asisten riset offline. Jawab HANYA dari potongan sumber berikut. Setiap potongan diberi nomor [1], [2], dst. Saat menyatakan fakta dari potongan, sertakan nomornya seperti [1]. JANGAN memakai pengetahuan di luar potongan. JANGAN mengarang. Jika potongan tidak cukup untuk menjawab, atau sumber saling bertentangan, katakan secara jujur bahwa buktinya tidak cukup atau bertentangan. Jawab dalam bahasa pertanyaan.
+
+[1] (doc-01-inferensi-on-device#c05)
+Untuk fakta yang berubah, diperlukan dokumen tambahan (misalnya paket pengetahuan lokal) yang disediakan terpisah.
+[Kaitan dengan privasi] Karena seluruh komputasi terjadi lokal, inferensi on-device menghilangkan kebutuhan mengirim teks pengguna ke server. Aplikasi yang benar-benar on-device biasanya tetap meminta izin internet hanya untuk mengunduh file model saat instalasi, bukan untuk memproses pertanyaan.
+
+[2] (doc-01-inferensi-on-device#c01)
+[Definisi] Inferensi on-device adalah proses menjalankan model kecerdasan buatan — misalnya model bahasa (LLM) — langsung di perangkat pengguna seperti ponsel atau laptop, tanpa mengirim data ke server. Kebalikannya adalah inferensi cloud: model berjalan di pusat data, dan perangkat hanya mengirim pertanyaan lalu menerima jawaban lewat internet.
+
+[3] (doc-01-inferensi-on-device#c02)
+[Cara kerja] Pada inferensi on-device, file model (misalnya format GGUF) disimpan di penyimpanan perangkat. Saat pengguna mengajukan pertanyaan, aplikasi: (1) merangkai prompt dari pertanyaan dan instruksi, (2) menjalankan model menggunakan CPU atau GPU perangkat, (3) menghasilkan jawaban token demi token secara lokal. Tidak ada paket data yang keluar dari perangkat selama proses ini berlangsung.
+
+[4] (doc-03-privasi-model-lokal#c05)
+[Batasan privasi yang tetap ada] - Meta aplikasi: sistem operasi tetap tahu aplikasi apa yang dipakai dan kapan. Privasi on-device melindungi isi, bukan keberadaan penggunaan. - Model: model yang diunduh bisa saja dari penerbit pihak ketiga; pilih aplikasi yang mencantumkan sumber dan lisensi modelnya. - Input lain: mikrofon (untuk fitur suara) dan keyboard tetap merupakan jalur input perangkat; izinnya terpisah dari izin internet.
+
+<|im_end|>
+<|im_start|>user
+Gabungkan informasi dari beberapa sumber di atas menjadi satu jawaban utuh untuk pertanyaan berikut. Sertakan nomor sitasi untuk setiap klaim.
+
+Pertanyaan: Bagaimana hubungan privasi, inferensi on-device, dan model bahasa lokal?<|im_end|>
+<|im_start|>assistant

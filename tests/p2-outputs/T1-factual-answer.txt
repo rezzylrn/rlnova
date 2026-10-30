@@ -1,0 +1,11 @@
+<think>
+Okay, the user is asking for an explanation of the GGUF format based on the provided sources. Let me start by checking the sources. 
+
+First, source [1] mentions GGUF as a format for saving model weights, tokenizer, and metadata in a single file. It also states that it replaces GGML. That's a good start.
+
+Source [2] explains that GGUF is used for model inference on-device. It mentions that the model is stored locally, and the inference process uses CPU or GPU without any data transfer. 
+
+I need to structure the answer to cover both sources. The explanation should start with GGUF's purpose and how it replaces GGML, then explain its use on-device. Make sure to include the numbers where applicable. Avoid using any external knowledge beyond the sources provided. Check for any contradictions or conflicting information. Looks good. Now, format the answer properly with the numbers.
+</think>
+
+[1] GGUF adalah format file biner yang menyimpan model, tokenizer, dan metadata dalam satu file tunggal untuk efisiensi penggunaan dan distribusi. GGUF menggantikan format lama GGML, dengan GGUF menggunakan CPU/GPU saat inferensi di penyimpanan perangkat. [2] GGUF dirancang untuk menyimpan bobot model secara lokal di perangkat, sehingga proses inferensi tidak memerlukan transfer data selama proses ini berlangsung. [end of text]
