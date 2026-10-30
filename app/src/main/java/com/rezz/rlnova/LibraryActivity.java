@@ -98,15 +98,19 @@ public class LibraryActivity extends Activity implements
 
         // v1.1.9: ikon saja (tanpa label teks), contentDescription utk aksesibilitas
         android.widget.ImageView tLib = navItem(R.drawable.ic_book, "Library");
+        android.widget.ImageView tRes = navItem(R.drawable.ic_search, "Research");
         android.widget.ImageView tDl = navItem(R.drawable.ic_download, "Downloads");
         android.widget.ImageView tChat = navItem(R.drawable.ic_chat, "Chat");
         tLib.setOnClickListener(v -> showLibrary());
+        tRes.setOnClickListener(v -> showResearch());
         tDl.setOnClickListener(v -> showDownloads());
         tChat.setOnClickListener(v -> showChatList());
         tLib.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1f));
+        tRes.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1f));
         tDl.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1f));
         tChat.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1f));
         bar.addView(tLib);
+        bar.addView(tRes);
         bar.addView(tDl);
         bar.addView(tChat);
         return bar;
@@ -121,8 +125,8 @@ public class LibraryActivity extends Activity implements
     }
 
     private void highlightNav(int activeIndex) {
-        int[] icons = {R.drawable.ic_book, R.drawable.ic_download, R.drawable.ic_chat};
-        int[] active = {R.drawable.ic_book_active, R.drawable.ic_download_active, R.drawable.ic_chat_active};
+        int[] icons = {R.drawable.ic_book, R.drawable.ic_search, R.drawable.ic_download, R.drawable.ic_chat};
+        int[] active = {R.drawable.ic_book_active, R.drawable.ic_search_active, R.drawable.ic_download_active, R.drawable.ic_chat_active};
         for (int i = 0; i < nav.getChildCount(); i++) {
             android.widget.ImageView t = (android.widget.ImageView) nav.getChildAt(i);
             t.setImageResource(i == activeIndex ? active[i] : icons[i]);
@@ -139,8 +143,16 @@ public class LibraryActivity extends Activity implements
                 .commit();
     }
 
-    private void showDownloads() {
+    private void showResearch() {
         highlightNav(1);
+        getFragmentManager().beginTransaction()
+                .setCustomAnimations(android.R.animator.fade_in, android.R.animator.fade_out)
+                .replace(R.id.content, new ResearchFragment())
+                .commit();
+    }
+
+    private void showDownloads() {
+        highlightNav(2);
         getFragmentManager().beginTransaction()
                 .setCustomAnimations(android.R.animator.fade_in, android.R.animator.fade_out)
                 .replace(R.id.content, new DownloadsFragment())
@@ -148,7 +160,7 @@ public class LibraryActivity extends Activity implements
     }
 
     private void showChatList() {
-        highlightNav(2);
+        highlightNav(3);
         getFragmentManager().beginTransaction()
                 .setCustomAnimations(android.R.animator.fade_in, android.R.animator.fade_out)
                 .replace(R.id.content, new ChatListFragment())
@@ -156,7 +168,7 @@ public class LibraryActivity extends Activity implements
     }
 
     private void showChatRoom(long convId) {
-        highlightNav(2);
+        highlightNav(3);
         getFragmentManager().beginTransaction()
                 .replace(R.id.content, ChatRoomFragment.newInstance(convId))
                 .addToBackStack(null)

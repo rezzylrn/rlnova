@@ -53,7 +53,7 @@ public final class ChatDatabase extends SQLiteOpenHelper {
     private final SQLiteDatabase db;
 
     private ChatDatabase(Context ctx) {
-        super(ctx, "rlnova.db", null, 3);
+        super(ctx, "rlnova.db", null, 4);
         db = getWritableDatabase();
     }
 
@@ -92,6 +92,10 @@ public final class ChatDatabase extends SQLiteOpenHelper {
             // v3 (v1.1.3 item 4): pin + flag auto-judul.
             d.execSQL("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
             d.execSQL("ALTER TABLE conversations ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 0");
+        }
+        if (oldV < 4) {
+            // v4 (v1.2.0): tabel riset — terpisah dari chat.
+            com.rezz.rlnova.research.ResearchDatabase.ensureTablePublic(d);
         }
     }
 
