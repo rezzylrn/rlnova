@@ -26,7 +26,8 @@ import java.io.File;
  */
 public class LibraryActivity extends Activity implements
         ModelLibraryFragment.Host, DownloadsFragment.Host,
-        ChatListFragment.Host, ChatRoomFragment.Host {
+        ChatListFragment.Host, ChatRoomFragment.Host,
+        ResearchFragment.Host {
 
     private DeviceInfo device;
     private ModelCatalog catalog;

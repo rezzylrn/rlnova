@@ -37,14 +37,17 @@ public class ResearchFragment extends Fragment {
     private EditText input;
     private TextView sendBtn;
     private TextView chipExplain, chipCompare, chipSynth;
+    private TextView modelBtn;               // v1.2.1: picker model Research
     private String selectedTask = "";       // "" = auto
+    private String selectedModelId = null;  // v1.2.1: pilihan eksplisit user (null = default)
     private ResearchIndex index;            // dimuat lazily di background
     private final android.os.Handler ui = new android.os.Handler();
 
     @Override
     public View onCreateView(android.view.LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
-        android.content.Context ctx = getActivity();
+        android.app.Activity ctxAct = getActivity(); // v1.2.1: Activity (dipakai refreshModelLabel)
+        android.content.Context ctx = ctxAct;
         LinearLayout root = new LinearLayout(ctx);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF0C0F14);
@@ -65,6 +68,15 @@ public class ResearchFragment extends Fragment {
         subtitle.setTextColor(0xFF9AA6B8);
         subtitle.setPadding(dp(16), 0, dp(16), dp(8));
         root.addView(subtitle, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // ---- model picker row (v1.2.1)
+        modelBtn = new TextView(ctx);
+        modelBtn.setTextSize(12);
+        modelBtn.setTextColor(0xFF5B8DEF);
+        modelBtn.setPadding(dp(16), dp(2), dp(16), dp(8));
+        modelBtn.setOnClickListener(v -> showModelPicker());
+        root.addView(modelBtn, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // ---- chips task
@@ -128,6 +140,7 @@ public class ResearchFragment extends Fragment {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         reload();
+        refreshModelLabel(ctxAct);
         loadIndexInBackground();
         return root;
     }
@@ -195,20 +208,112 @@ public class ResearchFragment extends Fragment {
     }
 
     private ModelCatalog.Model pickModel(android.app.Activity act) {
+        // v1.2.1: jangan pernah ClassCastException lagi — cek instanceof dulu.
+        if (!(act instanceof Host)) return null;
+        Host host = (Host) act;
         ModelCatalog catalog;
         try {
             catalog = ModelCatalog.load(act);
         } catch (Exception e) {
             return null;
         }
-        for (ModelCatalog.Model m : catalog.models) {
-            if (((Host) act).isModelDownloaded(m.id)) return m;
+        // 1. Pilihan eksplisit dari picker (persist di SharedPreferences).
+        String pref = act.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                .getString("selected_model_id", null);
+        if (pref != null) {
+            for (ModelCatalog.Model m : catalog.models) {
+                if (pref.equals(m.id) && host.isModelDownloaded(m.id)) return m;
+            }
         }
-        return null;
+        // 2. Default: model yang sedang dipakai Chat (conversation terakhir),
+        //    kalau ter-download.
+        try {
+            List<ChatDatabase.Conversation> convs =
+                    ChatDatabase.get(act).listConversations();
+            if (!convs.isEmpty() && convs.get(0).modelId != null) {
+                String chatModel = convs.get(0).modelId;
+                for (ModelCatalog.Model m : catalog.models) {
+                    if (chatModel.equals(m.id) && host.isModelDownloaded(m.id)) return m;
+                }
+            }
+        } catch (Throwable ignored) { }
+        // 3. Fallback: model ter-download terbesar.
+        ModelCatalog.Model best = null;
+        for (ModelCatalog.Model m : catalog.models) {
+            if (host.isModelDownloaded(m.id)
+                    && (best == null || m.sizeBytes > best.sizeBytes)) best = m;
+        }
+        return best;
     }
 
     public interface Host {
         boolean isModelDownloaded(String modelId);
+    }
+
+    // --------------------------------------------------------------- model picker
+
+    private static final String PREFS = "research";
+
+    /** Baris "Model: <nama> ▾" di tab Research — tap untuk pilih. */
+    private void showModelPicker() {
+        if (!isAdded()) return;
+        android.app.Activity act = getActivity();
+        if (!(act instanceof Host)) return;
+        Host host = (Host) act;
+        ModelCatalog catalog;
+        try {
+            catalog = ModelCatalog.load(act);
+        } catch (Exception e) {
+            return;
+        }
+        List<ModelCatalog.Model> downloaded = new ArrayList<>();
+        for (ModelCatalog.Model m : catalog.models) {
+            if (host.isModelDownloaded(m.id)) downloaded.add(m);
+        }
+        if (downloaded.isEmpty()) {
+            android.widget.Toast.makeText(act,
+                    "Download a model first in the Library tab",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] names = new String[downloaded.size()];
+        int checked = 0;
+        String current = getSelectedModelId(act);
+        for (int i = 0; i < downloaded.size(); i++) {
+            ModelCatalog.Model m = downloaded.get(i);
+            names[i] = m.name + "  (" + humanSize(m.sizeBytes) + ")";
+            if (current != null && current.equals(m.id)) checked = i;
+        }
+        new android.app.AlertDialog.Builder(act)
+                .setTitle("Model untuk Research")
+                .setSingleChoiceItems(names, checked, (d, w) -> {
+                    selectedModelId = downloaded.get(w).id;
+                    act.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                            .edit().putString("selected_model_id", selectedModelId).apply();
+                    refreshModelLabel(act);
+                    d.dismiss();
+                })
+                .setNegativeButton("[Tutup]", (d, w) -> d.dismiss())
+                .show();
+    }
+
+    private String getSelectedModelId(android.app.Activity act) {
+        return act.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                .getString("selected_model_id", null);
+    }
+
+    private static String humanSize(long bytes) {
+        if (bytes >= 1_000_000_000L) {
+            return String.format(java.util.Locale.US, "%.1f GB", bytes / 1e9);
+        }
+        return String.format(java.util.Locale.US, "%.0f MB", bytes / 1e6);
+    }
+
+    /** Nama model aktif di UI Research (pakai pickModel — sumber kebenaran sama dengan Ask). */
+    private void refreshModelLabel(android.app.Activity act) {
+        if (!isAdded() || modelBtn == null) return;
+        ModelCatalog.Model m = pickModel(act);
+        modelBtn.setText("Model: " + (m != null ? m.name : "belum ada") + "  ▾");
     }
 
     private void enterGeneratingUi() {
