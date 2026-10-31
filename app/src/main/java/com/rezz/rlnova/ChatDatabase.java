@@ -94,8 +94,8 @@ public final class ChatDatabase extends SQLiteOpenHelper {
             d.execSQL("ALTER TABLE conversations ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 0");
         }
         if (oldV < 4) {
-            // v4 (v1.2.0): tabel riset — terpisah dari chat.
-            com.rezz.rlnova.research.ResearchDatabase.ensureTablePublic(d);
+            // v4 (v1.2.0): tabel riset — DIPERTAHANKAN (idempotent-safe upgrade;
+            // tabel kosong tidak ganggu apa pun, v1.2.2 riset lewat toggle web).
         }
     }
 

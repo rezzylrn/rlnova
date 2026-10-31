@@ -15,12 +15,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import com.rezz.rlnova.research.ResearchDatabase;
-import com.rezz.rlnova.research.ResearchIndex;
-import com.rezz.rlnova.research.ResearchPipeline;
-import com.rezz.rlnova.research.ResearchPrompt;
-import com.rezz.rlnova.research.ResearchSession;
-
 /**
  * GenerationService (v1.1.3, item 1):
  *
@@ -46,16 +40,16 @@ public class GenerationService extends Service {
     public static final String ACTION_START = "com.rezz.rlnova.action.GEN_START";
     public static final String ACTION_STOP = "com.rezz.rlnova.action.GEN_STOP";
     public static final String ACTION_TITLE = "com.rezz.rlnova.action.GEN_TITLE";
-    // v1.2.0: generation riset (prompt dibangun dari retrieval lokal — tanpa jaringan)
-    public static final String ACTION_RESEARCH = "com.rezz.rlnova.action.GEN_RESEARCH";
+    // v1.2.2: riset WEB via toggle chat — prompt dibangun dari hasil pencarian
+    // web (keyless), jawab tetap oleh model lokal on-device.
+    public static final String ACTION_WEB_RESEARCH = "com.rezz.rlnova.action.GEN_WEB_RESEARCH";
+    public static final String EXTRA_WEB = "webResearch"; // boolean extra di ACTION_START
 
     public static final String EXTRA_CONV = "conversationId";
     public static final String EXTRA_USER_TEXT = "userText";
     public static final String EXTRA_RETRY = "retry";
     public static final String EXTRA_MODEL_ID = "modelId";
     public static final String EXTRA_SYSTEM = "systemPrompt";
-    public static final String EXTRA_RESEARCH_ID = "researchId"; // row ID riset
-    public static final String EXTRA_RESEARCH_TASK = "researchTask";
 
     // ------------------------------------------------------- shared engine
     // Dipindah dari ChatRoomFragment (v1.1.3) — pemilik sekarang service layer.
@@ -99,6 +93,14 @@ public class GenerationService extends Service {
     public static void start(android.content.Context ctx, long convId,
                              String userText, boolean retry,
                              ModelCatalog.Model m, String systemPrompt) {
+        start(ctx, convId, userText, retry, m, systemPrompt, false);
+    }
+
+    /** v1.2.2: overload dengan flag riset web (web=true → cari internet dulu). */
+    public static void start(android.content.Context ctx, long convId,
+                             String userText, boolean retry,
+                             ModelCatalog.Model m, String systemPrompt,
+                             boolean web) {
         Intent i = new Intent(ctx, GenerationService.class);
         i.setAction(ACTION_START);
         i.putExtra(EXTRA_CONV, convId);
@@ -106,6 +108,7 @@ public class GenerationService extends Service {
         i.putExtra(EXTRA_RETRY, retry);
         i.putExtra(EXTRA_MODEL_ID, m.id);
         i.putExtra(EXTRA_SYSTEM, systemPrompt);
+        i.putExtra(EXTRA_WEB, web);
         if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i);
         else ctx.startService(i);
     }
@@ -148,19 +151,6 @@ public class GenerationService extends Service {
             });
             return START_NOT_STICKY;
         }
-        if (intent != null && ACTION_RESEARCH.equals(intent.getAction())) {
-            // v1.2.0: pertanyaan riset — prompt dari retrieval lokal, bukan riwayat chat.
-            final long rid = intent.getLongExtra(EXTRA_RESEARCH_ID, -1);
-            final String mid = intent.getStringExtra(EXTRA_MODEL_ID);
-            final String q = intent.getStringExtra(EXTRA_USER_TEXT);
-            final String task = intent.getStringExtra(EXTRA_RESEARCH_TASK);
-            ModelCatalog.Model m = ModelCatalog.byId(allModels(), mid);
-            if (m == null || q == null || rid < 0) { stopSelf(); return START_NOT_STICKY; }
-            GenerationState gs = GenerationState.get();
-            if (gs.generating) { notifyRejected(); stopSelf(); return START_NOT_STICKY; }
-            runResearch(rid, q, task, m);
-            return START_NOT_STICKY;
-        }
         if (intent == null || !ACTION_START.equals(intent.getAction())) {
             stopSelf();
             return START_NOT_STICKY;
@@ -170,6 +160,7 @@ public class GenerationService extends Service {
         final String mid = intent.getStringExtra(EXTRA_MODEL_ID);
         final String system = intent.getStringExtra(EXTRA_SYSTEM);
         final boolean isRetry = intent.getBooleanExtra(EXTRA_RETRY, false);
+        final boolean web = intent.getBooleanExtra(EXTRA_WEB, false); // v1.2.2
         ModelCatalog.Model m = ModelCatalog.byId(allModels(), mid);
         if (m == null || userText == null || cid < 0) {
             stopSelf();
@@ -183,7 +174,7 @@ public class GenerationService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        runGeneration(cid, userText, isRetry, m, system);
+        runGeneration(cid, userText, isRetry, m, system, web);
         return START_NOT_STICKY;
     }
 
@@ -353,7 +344,7 @@ public class GenerationService extends Service {
 
     private void runGeneration(final long cid, final String userText,
                                final boolean isRetry, final ModelCatalog.Model m,
-                               final String system) {
+                               final String system, final boolean web) {
         convId = cid;
         final GenerationState st = GenerationState.get();
         st.reset(cid, m.id);
@@ -364,10 +355,28 @@ public class GenerationService extends Service {
         st.stopReason = -1;
         st.error = null;
         st.userStopRequested = false;
-        startForeground(NOTIF_ID, buildNotification(m.name, "Waiting for model…"));
+        // v1.2.2: notification text beda untuk riset web (fase pencarian).
+        startForeground(NOTIF_ID, buildNotification(m.name,
+                web ? "Searching the web…" : "Waiting for model…"));
         notifyToken();
 
         EXECUTOR.execute(() -> {
+            // 0. v1.2.2: toggle research ON → cari web DULU (worker thread,
+            //    sebelum nyentuh engine). Gagal jaringan/hasil kosong → jujur,
+            //    TIDAK ada fallback karangan.
+            String evidence = null;
+            if (web) {
+                evidence = WebSearch.search(userText);
+                if (WebSearch.isEmpty(evidence)) {
+                    st.generating = false;
+                    st.stopReason = -1;
+                    st.error = "No internet connection or no results — cannot search the web.";
+                    notifyDone();
+                    stopForeground(true);
+                    stopSelf();
+                    return;
+                }
+            }
             // 1. Library native
             try {
                 LlamaEngine.loadLibrary();
@@ -421,8 +430,12 @@ public class GenerationService extends Service {
                     history = history.subList(0, history.size() - 1);
                 }
             }
-            final String prompt = ChatTemplates.build(m.chatTemplate, system,
-                    history, userText);
+            final String prompt = web
+                    ? ChatTemplates.build(m.chatTemplate,
+                          WebSearch.researchSystemPrompt(),
+                          history, WebSearch.userPrompt(userText, evidence))
+                    : ChatTemplates.build(m.chatTemplate, system,
+                          history, userText);
 
             LlamaEngine.GenParams p = new LlamaEngine.GenParams();
             final LlamaEngine eng;
@@ -460,184 +473,9 @@ public class GenerationService extends Service {
         return ctx;
     }
 
-    // ------------------------------------------------------- research (v1.2.0)
-
-    /** State riset aktif (dibaca fragment Research untuk streaming). */
-    public static volatile long activeResearchId = -1;
-
-    /** Starter statis — dipanggil fragment Research. */
-    public static void startResearch(android.content.Context ctx, long researchId,
-                                     String question, String task,
-                                     ModelCatalog.Model m) {
-        Intent i = new Intent(ctx, GenerationService.class);
-        i.setAction(ACTION_RESEARCH);
-        i.putExtra(EXTRA_RESEARCH_ID, researchId);
-        i.putExtra(EXTRA_USER_TEXT, question);
-        i.putExtra(EXTRA_RESEARCH_TASK, task);
-        i.putExtra(EXTRA_MODEL_ID, m.id);
-        if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i);
-        else ctx.startService(i);
-    }
-
-    /**
-     * Generation riset: retrieval lokal -> prompt bukti-terkendali -> model.
-     * Seluruh jalur TANPA JARINGAN (retrieval = BM25 di memory; prompt dari
-     * assets; generation = llama.cpp lokal). Bukti kurang -> tolak jujur,
-     * tanpa fallback web.
-     */
-    private void runResearch(final long rid, final String question,
-                             final String taskIn, final ModelCatalog.Model m) {
-        final GenerationState st = GenerationState.get();
-        st.reset(-1, m.id);              // bukan percakapan chat
-        st.generating = true;
-        st.modelName = m.name;
-        st.genStartMs = System.currentTimeMillis();
-        st.nTokens = 0;
-        st.stopReason = -1;
-        st.error = null;
-        st.userStopRequested = false;
-        st.emptyGeneration = false;
-        activeResearchId = rid;
-        startForeground(NOTIF_ID, buildNotification(m.name, "Research…"));
-        notifyToken();
-
-        EXECUTOR.execute(() -> {
-            try {
-                // 1. Retrieval lokal (assets + BM25, tanpa jaringan)
-                ResearchIndex index = ResearchIndex.load(getApplicationContext());
-                String task = (taskIn == null || taskIn.isEmpty())
-                        ? com.rezz.rlnova.research.ResearchSession.detectTask(question)
-                        : taskIn;
-                ResearchPipeline.Result res = ResearchPipeline.prepare(index, task, question);
-
-                // simpan evidence ids ke row riset (untuk render sitasi di UI)
-                java.util.List<String> evIds = new java.util.ArrayList<>();
-                for (ResearchPrompt.Evidence e : res.given) evIds.add(e.chunkId);
-
-                if (!res.hasEvidence) {
-                    // Tolak jujur — TIDAK memanggil model, TIDAK fallback web.
-                    ResearchDatabase.get(getApplicationContext()).insertQuestion(
-                            task, question, res.declineReason, evIds, true,
-                            0, 0.0, m.id);
-                    st.generating = false;
-                    st.stopReason = 0;
-                    st.modelIdFinal = m.id;
-                    notifyDone();
-                    stopForeground(true);
-                    stopSelf();
-                    return;
-                }
-
-                // 2. Pastikan engine siap (pola sama dengan runGeneration)
-                try {
-                    LlamaEngine.loadLibrary();
-                } catch (Throwable t) {
-                    researchFail(rid, st, "Failed to load native library: " + t.getMessage());
-                    return;
-                }
-                synchronized (ENGINE_LOCK) {
-                    if (sharedEngine != null && (!m.id.equals(sharedEngineModelId)
-                            || sharedEngineConfigEpoch != perfEpoch())) {
-                        sharedEngine.free();
-                        sharedEngine = null;
-                        sharedEngineModelId = null;
-                    }
-                    if (sharedEngine == null) {
-                        DeviceInfo dev = PerfPrefs.currentDevice(getApplicationContext());
-                        PerfPrefs.Perf perf = PerfPrefs.load(this, dev);
-                        int ctx = contextPerTier(dev, m.context);
-                        LlamaEngine e = new LlamaEngine();
-                        java.io.File f = new java.io.File(getFilesDir(),
-                                "models/" + m.id + ".gguf");
-                        boolean ok = f.exists()
-                                && e.init(f.getAbsolutePath(), ctx,
-                                      perf.effectiveThreads(dev != null ? dev.cpuCores : 4), perf);
-                        if (!ok) {
-                            st.lastInitFailed = true;
-                            researchFail(rid, st,
-                                    "Failed to load model (not enough RAM or corrupt file)");
-                            return;
-                        }
-                        sharedEngine = e;
-                        sharedEngineModelId = m.id;
-                        sharedEngineConfigEpoch = perfEpoch();
-                        sharedEngineInitCtx = ctx;
-                    }
-                    st.lastInitFailed = false;
-                }
-
-                // 3. Prompt: HANYA instruksi + pertanyaan + chunk bukti.
-                String prompt = ChatTemplates.build(m.chatTemplate,
-                        res.prompt.systemPrompt(),
-                        java.util.Collections.emptyList(),   // riwayat chat TIDAK dilibatkan
-                        res.prompt.userPrompt());
-
-                // 4. Generation
-                LlamaEngine.GenParams p = new LlamaEngine.GenParams();
-                p.temperature = 0.4f;   // riset: lebih deterministik dari chat
-                p.maxTokens = 512;
-                final LlamaEngine eng;
-                synchronized (ENGINE_LOCK) { eng = sharedEngine; }
-                boolean started = eng != null && eng.isReady()
-                        && eng.generateAsync(prompt, p, sharedEngineInitCtx,
-                            new LlamaEngine.Callback() {
-                    @Override public void onNativeToken(String piece) {
-                        GenerationState g = GenerationState.get();
-                        synchronized (g.raw) { g.raw.append(piece); }
-                        g.nTokens++;
-                        notifyToken();
-                    }
-                    @Override public void onNativeDone(int nGen, int stopReason,
-                                                       double msTotal) {
-                        finishResearch(rid, m, nGen, msTotal);
-                    }
-                });
-                if (!started) researchFail(rid, st, "Engine busy or not ready");
-            } catch (Throwable t) {
-                researchFail(rid, st, "Research failed: " + t.getMessage());
-            }
-        });
-    }
-
-    private void researchFail(long rid, GenerationState st, String msg) {
-        st.generating = false;
-        st.stopReason = -1;
-        st.error = msg;
-        activeResearchId = -1;
-        notifyDone();
-        stopForeground(true);
-        stopSelf();
-    }
-
-    /** Generation riset selesai — simpan jawaban RAW (renderer sitasi di UI). */
-    private void finishResearch(long rid, ModelCatalog.Model m,
-                                int nGen, double msTotal) {
-        GenerationState st = GenerationState.get();
-        st.generating = false;
-        st.stopReason = Math.max(0, nGen);
-        String rawOut;
-        synchronized (st.raw) { rawOut = st.raw.toString(); }
-        double secs = msTotal / 1000.0;
-        double tps = secs > 0 && nGen > 0 ? nGen / secs : 0.0;
-        if (rawOut.trim().isEmpty() && nGen == 0) {
-            st.emptyGeneration = true;
-            ResearchDatabase.get(getApplicationContext()).setAnswer(rid,
-                    "(Model tidak menghasilkan jawaban — coba ulangi pertanyaan.)",
-                    0, 0.0, m.id);
-        } else {
-            // NOTE: teks tersimpan RAW (termasuk marker [N]) — renderer sitasi
-            // bekerja saat UI menampilkan; marker tidak valid dibuang renderer.
-            ResearchDatabase.get(getApplicationContext()).setAnswer(rid,
-                    rawOut, nGen, tps, m.id);
-            st.tokensFinal = nGen;
-            st.tokPerSec = tps;
-            st.modelIdFinal = m.id;
-        }
-        activeResearchId = -1;
-        notifyDone();
-        stopForeground(true);
-        stopSelf();
-    }
+    // v1.2.2: runResearch / startResearch / researchFail / finishResearch
+    // (paket pengetahuan lokal v1.2.0) dihapus — riset sekarang via toggle web
+    // di chat: WebSearch.search() di awal runGeneration, jawab tetap model lokal.
 
     private void fail(final String msg) {
         GenerationState st = GenerationState.get();

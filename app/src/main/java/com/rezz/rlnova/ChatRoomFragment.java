@@ -129,6 +129,8 @@ public class ChatRoomFragment extends Fragment {
     private EditText input;
     private android.widget.ImageButton sendBtn; // v1.1.9: ikon, bukan tulisan
     private android.widget.ImageButton micBtn;  // v1.1.7: tombol mic (STT on-device)
+    private TextView researchToggle;    // v1.2.2: chip toggle riset web di composer
+    private volatile boolean webOn = false; // ON = kirim → cari web dulu
     private TextView streamingBubble;   // kartu AI yang sedang di-stream
     private TextView thinkingHeader;    // header collapsible "Thinking"
     private TextView thinkingBody;      // isi think (collapse/expand)
@@ -315,11 +317,36 @@ public class ChatRoomFragment extends Fragment {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // ---------------- composer ----------------
+        // v1.2.2: composer jadi vertikal — baris atas = toggle web research,
+        // baris bawah = input + mic + send (perilaku lama utuh).
         LinearLayout composer = new LinearLayout(ctx);
-        composer.setOrientation(LinearLayout.HORIZONTAL);
-        composer.setGravity(Gravity.CENTER_VERTICAL);
-        composer.setPadding(dp(12), dp(8), dp(12), dp(12));
+        composer.setOrientation(LinearLayout.VERTICAL);
         composer.setBackgroundColor(0xFF0C0F14);
+
+        LinearLayout toggleRow = new LinearLayout(ctx);
+        toggleRow.setOrientation(LinearLayout.HORIZONTAL);
+        toggleRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        toggleRow.setPadding(dp(14), dp(6), dp(14), 0);
+        researchToggle = new TextView(ctx);
+        researchToggle.setText("Web research · off");
+        researchToggle.setTextSize(12);
+        researchToggle.setTypeface(Typeface.DEFAULT_BOLD);
+        researchToggle.setTextColor(0xFF8A94A8);
+        researchToggle.setBackgroundResource(R.drawable.bg_chip_pill);
+        researchToggle.setPadding(dp(12), dp(6), dp(12), dp(6));
+        researchToggle.setContentDescription("Toggle web research");
+        researchToggle.setOnClickListener(v -> toggleWebResearch());
+        toggleRow.addView(researchToggle, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        composer.addView(toggleRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout inputRow = new LinearLayout(ctx);
+        inputRow.setOrientation(LinearLayout.HORIZONTAL);
+        inputRow.setGravity(Gravity.CENTER_VERTICAL);
+        inputRow.setPadding(dp(12), dp(4), dp(12), dp(12));
 
         input = new EditText(ctx);
         input.setHint("Type a message…");
@@ -362,6 +389,10 @@ public class ChatRoomFragment extends Fragment {
         sendBtn.setContentDescription("Send message");
         sendBtn.setOnClickListener(v -> onSendClicked());
         composer.addView(sendBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        composer.addView(inputRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         root.addView(composer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -474,9 +505,20 @@ public class ChatRoomFragment extends Fragment {
             ChatDatabase.get(getActivity()).renameConversation(convId, text);
             ((Host) getActivity()).onConversationListChanged();
         }
+        // v1.2.2: flag webOn → service cari web dulu sebelum jawab (model lokal).
         GenerationService.start(getActivity(), convId, text, false, model,
-                conv != null ? conv.systemPrompt : null);
+                conv != null ? conv.systemPrompt : null, webOn);
         enterGeneratingUi();
+    }
+
+    /** v1.2.2: toggle chip Web research di composer (per sesi chat ini). */
+    private void toggleWebResearch() {
+        webOn = !webOn;
+        researchToggle.setText(webOn ? "Web research · on" : "Web research · off");
+        researchToggle.setTextColor(webOn ? 0xFF5B8DEF : 0xFF8A94A8);
+        toast(webOn
+                ? "Web research ON — answers will use phone internet"
+                : "Web research OFF");
     }
 
     private void deleteLastUserMessage() {
@@ -692,7 +734,7 @@ public class ChatRoomFragment extends Fragment {
             messagesView.removeView(note); // note + retry ikut hilang bareng parent
             messagesView.removeView(retry);
             GenerationService.start(getActivity(), convId, lastUserTextFor(""), true,
-                    model, conv != null ? conv.systemPrompt : null);
+                    model, conv != null ? conv.systemPrompt : null, webOn);
             enterGeneratingUi();
         });
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
@@ -831,7 +873,7 @@ public class ChatRoomFragment extends Fragment {
                 messagesView.removeView(section);
                 // Retry via service — tanpa duplikasi pesan user (text terakhir dipakai service dari DB).
                 GenerationService.start(getActivity(), convId, lastUserTextFor(""), true,
-                        model, conv != null ? conv.systemPrompt : null);
+                        model, conv != null ? conv.systemPrompt : null, webOn);
                 enterGeneratingUi();
             });
             LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
