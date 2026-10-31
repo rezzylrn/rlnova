@@ -13,6 +13,7 @@ import android.view.Window;
 import android.view.animation.PathInterpolator;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
@@ -42,6 +43,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // v1.2.5: crash catcher global — dipasang PALING AWAL (sebelum
+        // super.onCreate dan segala UI), sebelum activity lain jalan.
+        CrashCatcher.install(this);
+
         super.onCreate(savedInstanceState);
 
         Window w = getWindow();
@@ -143,7 +148,79 @@ public class MainActivity extends Activity {
         // lalu tampilkan dialog logcat (AT MOST once per launch). Semua // DIAG-TEMP v1.1.17
         // try/catch — kegagalan logcat/dialog TIDAK PERNAH crash launch. // DIAG-TEMP v1.1.17
         maybeShowTtsCrashDialog(); // DIAG-TEMP v1.1.17
+
+        // v1.2.5: dialog crash log GLOBAL (pola sama dengan dialog logcat TTS
+        // di atas). Bila run sebelumnya crash di jalur mana pun (chat/web/
+        // engine/UI), crash-log.txt ada → tampilkan isi log scrollable +
+        // [Salin log] + [Tutup], lalu hapus file (max 1x per launch). Semua
+        // try/catch — kegagalan dialog TIDAK PERNAH crash launch.
+        maybeShowGlobalCrashDialog();
     }
+
+    // ==================== v1.2.5: crash log global ====================
+    /** Baca crash-log.txt dari run sebelumnya → dialog scrollable + copy. */
+    private void maybeShowGlobalCrashDialog() {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(),
+                    CrashCatcher.FILE_NAME);
+            if (!f.exists() || f.length() == 0) return;
+            String full = "";
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader(f))) {
+                StringBuilder sb = new StringBuilder();
+                String l;
+                while ((l = r.readLine()) != null) sb.append(l).append('\n');
+                full = sb.toString();
+            } catch (Throwable ignored) { }
+            f.delete(); // hapus segera — dialog max 1x per launch
+            if (full.trim().isEmpty()) return;
+            final String logText = full;
+            final java.util.List<String> lines = new java.util.ArrayList<>();
+            for (String l : logText.split("\n")) lines.add(l);
+            int from = Math.max(0, lines.size() - 60);
+            StringBuilder body = new StringBuilder();
+            for (int i = from; i < lines.size(); i++) {
+                body.append(lines.get(i)).append('\n');
+            }
+            if (from > 0) {
+                body.insert(0, "(... " + from + " baris awal dipangkas — "
+                        + "salin log untuk versi lengkap)\n");
+            }
+            final String bodyText = body.toString();
+            ui.post(() -> showGlobalCrashDialog(bodyText, logText));
+        } catch (Throwable ignored) { } // never crash the launch
+    }
+
+    private void showGlobalCrashDialog(String body, final String fullText) {
+        try {
+            ScrollView scroll = new ScrollView(this);
+            TextView msg = new TextView(this);
+            msg.setText(body);
+            msg.setTextSize(12f);
+            msg.setTypeface(Typeface.MONOSPACE);
+            msg.setPadding(dp(16), dp(8), dp(16), dp(8));
+            scroll.addView(msg);
+            android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
+                    .setTitle("Rlnova mati tak terduga — log crash")
+                    .setView(scroll)
+                    .setPositiveButton("[Salin log]", (dlg, which) -> {
+                        try {
+                            android.content.ClipboardManager cm =
+                                    (android.content.ClipboardManager)
+                                            getSystemService(CLIPBOARD_SERVICE);
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                                    "rlnova-crash", fullText));
+                            android.widget.Toast.makeText(this, "Log tersalin",
+                                    android.widget.Toast.LENGTH_SHORT).show();
+                        } catch (Throwable ignored) { }
+                    })
+                    .setNegativeButton("[Tutup]", (dlg, which) -> dlg.dismiss())
+                    .create();
+            d.setCanceledOnTouchOutside(false);
+            d.show();
+        } catch (Throwable ignored) { } // never crash the launch
+    }
+    // ================== AKHIR v1.2.5: crash log global ==================
 
     // ==================== DIAG-TEMP v1.1.17 ==================== // DIAG-TEMP v1.1.17
     // Dialog logcat: hanya kalau crash marker dari run sebelumnya ada. // DIAG-TEMP v1.1.17

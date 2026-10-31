@@ -36,6 +36,7 @@ public class GenerationService extends Service {
 
     public static final String CHANNEL_ID = "rlnova_generation";
     public static final int NOTIF_ID = 1002;
+    public static final int TITLE_NOTIF_ID = 1003; // v1.2.5 jalur auto-title
 
     public static final String ACTION_START = "com.rezz.rlnova.action.GEN_START";
     public static final String ACTION_STOP = "com.rezz.rlnova.action.GEN_STOP";
@@ -144,9 +145,21 @@ public class GenerationService extends Service {
             return START_NOT_STICKY;
         }
         if (intent != null && ACTION_TITLE.equals(intent.getAction())) {
-            // Auto-title: jalan HANYA saat engine idle (drainTitleQueue cek lagi).
+            // v1.2.5 FIX (crash sesekali tanpa pola): startForegroundService()
+            // WAJIB diikuti startForeground() — dulu jalur auto-title TIDAK
+            // PERNAH memanggil startForeground. Bila app ada di background
+            // saat ini (user keluar app setelah pesan ke-3, generation
+            // selesai di background → title antre), Android melempar
+            // ForegroundServiceDidNotStartInTimeException ±5-10 dtk kemudian
+            // → force-close tanpa jejak. Sekarang: notifikasi mini dulu,
+            // proses antrean, lalu stopForeground + stopSelf.
+            startForeground(TITLE_NOTIF_ID, buildNotification(
+                    "Auto title", "Finishing up…"));
             EXECUTOR.execute(() -> {
-                drainTitleQueue();
+                try {
+                    drainTitleQueue();
+                } catch (Throwable ignored) { }
+                stopForeground(true);
                 stopSelf();
             });
             return START_NOT_STICKY;
@@ -272,9 +285,14 @@ public class GenerationService extends Service {
     /** Bersihkan hasil title (kutip/spasi/prefix) + update DB + refresh list. */
     private void finishTitleGeneration(final long convId, GenerationState st) {
         String out;
-        synchronized (st.raw) { out = st.raw.toString(); }
+        // v1.2.5 FIX: setLength(0) harus di dalam lock yang sama dengan
+        // append di onNativeToken — sebelumnya clear di luar lock bisa
+        // balapan dengan token title yang datang belakangan.
+        synchronized (st.raw) {
+            out = st.raw.toString();
+            st.raw.setLength(0);
+        }
         String title = cleanTitle(out);
-        st.raw.setLength(0);
         st.autoTitleBusy = false;
         if (title == null || title.isEmpty()) return; // gagal/kosong: diam
         ChatDatabase db = ChatDatabase.get(getApplicationContext());
@@ -525,6 +543,11 @@ public class GenerationService extends Service {
         if (nGen >= 0) {
             String rawOut;
             synchronized (st.raw) { rawOut = st.raw.toString(); }
+            // v1.2.5 FIX: dulu baris insert di bawah memanggil
+            // st.raw.toString() LAGI tanpa synchronized — StringBuilder yang
+            // sama masih bisa di-append worker token (datarace, jawaban bisa
+            // korup/kepotong). Sekarang insert pakai snapshot rawOut yang
+            // sudah diambil di bawah lock yang sama dengan onNativeToken.
             // v1.1.11 FIX: model yang langsung mengeluarkan EOS (0 token, raw
             // kosong) jangan disimpan sebagai pesan assistant — dulu jadi kartu
             // kosong + "0 tokens". Tandai error supaya UI menampilkan catatan
@@ -544,8 +567,10 @@ public class GenerationService extends Service {
             double secs = msTotal / 1000.0;
             double tps = secs > 0 ? nGen / secs : 0.0;
             // SERVICE yang insert pesan assistant (RAW + stats + model_id).
+            // v1.2.5: pakai snapshot rawOut (sudah synchronized) — bukan
+            // st.raw.toString() langsung.
             ChatDatabase.get(getApplicationContext()).insertMessage(cid,
-                    ChatDatabase.ROLE_ASSISTANT, st.raw.toString(),
+                    ChatDatabase.ROLE_ASSISTANT, rawOut,
                     nGen, tps, m.id);
             st.tokensFinal = nGen;
             st.tokPerSec = tps;
