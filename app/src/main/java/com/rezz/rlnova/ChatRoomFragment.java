@@ -367,7 +367,10 @@ public class ChatRoomFragment extends Fragment {
         LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         ilp.rightMargin = dp(8);
-        composer.addView(input, ilp);
+        // v1.2.3: input/mic/send WAJIB masuk inputRow (horizontal), bukan
+        // composer (vertikal) — di parent vertikal weight 1f jatuh ke tinggi,
+        // EditText lebar 0 → input invisible + tombol menumpuk.
+        inputRow.addView(input, ilp);
 
         // v1.1.9: ImageButton ikon — bukan tulisan. Tint putih agar kontras di atas bg pill.
         micBtn = new android.widget.ImageButton(ctx);
@@ -379,7 +382,7 @@ public class ChatRoomFragment extends Fragment {
         micBtn.setOnClickListener(v -> onMicClicked());
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(48), dp(48));
         mlp.rightMargin = dp(8);
-        composer.addView(micBtn, mlp);
+        inputRow.addView(micBtn, mlp);
 
         sendBtn = new android.widget.ImageButton(ctx);
         sendBtn.setImageResource(R.drawable.ic_send);
@@ -388,7 +391,7 @@ public class ChatRoomFragment extends Fragment {
         sendBtn.setPadding(dp(12), dp(12), dp(12), dp(12));
         sendBtn.setContentDescription("Send message");
         sendBtn.setOnClickListener(v -> onSendClicked());
-        composer.addView(sendBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        inputRow.addView(sendBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         composer.addView(inputRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,

@@ -361,16 +361,36 @@ public class GenerationService extends Service {
         notifyToken();
 
         EXECUTOR.execute(() -> {
-            // 0. v1.2.2: toggle research ON → cari web DULU (worker thread,
-            //    sebelum nyentuh engine). Gagal jaringan/hasil kosong → jujur,
-            //    TIDAK ada fallback karangan.
+            // 0. v1.2.3: toggle research ON → cari web DULU (worker thread,
+            //    sebelum nyentuh engine). Pesan error dibedakan sesuai sebab:
+            //    jaringan / HTTP server / 200 tapi 0 hasil — jangan menyalahkan
+            //    koneksi user untuk kegagalan server.
             String evidence = null;
             if (web) {
-                evidence = WebSearch.search(userText);
+                WebSearch.Outcome o = WebSearch.searchOutcome(userText);
+                if (o.networkError) {
+                    st.generating = false;
+                    st.stopReason = -1;
+                    st.error = "No internet connection — check Wi-Fi or mobile data, then try again.";
+                    notifyDone();
+                    stopForeground(true);
+                    stopSelf();
+                    return;
+                }
+                if (o.httpCode != 200) {
+                    st.generating = false;
+                    st.stopReason = -1;
+                    st.error = "Search service unavailable (HTTP " + o.httpCode + "). Try again later.";
+                    notifyDone();
+                    stopForeground(true);
+                    stopSelf();
+                    return;
+                }
+                evidence = WebSearch.formatHits(o.hits);
                 if (WebSearch.isEmpty(evidence)) {
                     st.generating = false;
                     st.stopReason = -1;
-                    st.error = "No internet connection or no results — cannot search the web.";
+                    st.error = "No results found for this query.";
                     notifyDone();
                     stopForeground(true);
                     stopSelf();

@@ -2,7 +2,6 @@ package com.rezz.rlnova;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -13,15 +12,22 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * WebSearch (v1.2.2): pencarian web keyless untuk toggle riset di chat.
+ * WebSearch (v1.2.3): pencarian web keyless untuk toggle riset di chat.
  *
- * Endpoint: DuckDuckGo HTML ("https://html.duckduckgo.com/html/") — POST form
+ * Endpoint: DuckDuckGo Lite ("https://lite.duckduckgo.com/lite/") — GET
  * q=<query>&kl=wt-wt, TANPA API key, TANPA layanan berbayar. Respons HTML
- * di-parse dengan regex ke daftar {judul, URL, snippet} (maks 6 hasil).
- * Redirect eksternal (//duckduckgo.com/l/?uddg=...) di-decode ke URL asli.
+ * di-parse dengan regex ke daftar {judul, URL, snippet} (maks 6 hasil):
+ * anchor class='result-link' + <td class='result-snippet'>. Redirect
+ * eksternal (//duckduckgo.com/l/?uddg=...) di-decode ke URL asli.
+ *
+ * v1.2.3: searchOutcome() membedakan sebab kegagalan (network / HTTP code /
+ * 200 tapi 0 hasil) supaya GenerationService menampilkan pesan yang benar,
+ * bukan selalu menyalahkan koneksi user. Parser diverifikasi terhadap 3
+ * file HTML live di tests/ws/live_*.html (ParseTest).
  *
  * Kontrak untuk pemanggil (GenerationService):
  *   - search(query)  → null/""/marker "NO_RESULTS" = gagal/kosong (cek isEmpty)
+ *   - searchOutcome(q) → detail sebab gagal (networkError / httpCode / hits)
  *   - isEmpty(s)     → true bila evidence tidak layak dipakai
  *   - researchSystemPrompt() / userPrompt(q, evidence) → prompt riset berbasis
  *     bukti; model DILARANG jawab di luar bukti, sitasi wajib [1]..[6].
@@ -31,7 +37,7 @@ import java.util.regex.Pattern;
  */
 public final class WebSearch {
 
-    private static final String DDG_URL = "https://html.duckduckgo.com/html/";
+    private static final String DDG_URL = "https://lite.duckduckgo.com/lite/";
     private static final int TIMEOUT_MS = 15000;
     private static final int MAX_RESULTS = 6;
     private static final int MAX_SNIPPET = 320;
@@ -54,7 +60,19 @@ public final class WebSearch {
                 || evidence.trim().equals(NO_RESULTS);
     }
 
-    // ------------------------------------------------------------ public API
+    // ------------------------------------------------------------ query core
+
+    /** Sebab kegagalan query — dipakai untuk pesan error yang dibedakan. */
+    public static final class Outcome {
+        public final boolean networkError; // exception (timeout, DNS, dsb)
+        public final int httpCode;         // != 200 bila server menolak
+        public final List<Hit> hits;       // null bila error; bisa kosong
+        Outcome(boolean net, int code, List<Hit> h) {
+            networkError = net; httpCode = code; hits = h;
+        }
+        public boolean ok() { return !networkError && httpCode == 200
+                && hits != null && !hits.isEmpty(); }
+    }
 
     /**
      * Cari web, kembalikan blok bukti terformat ([1] judul — URL — snippet…).
@@ -62,6 +80,11 @@ public final class WebSearch {
      */
     public static String search(String query) {
         List<Hit> hits = query(query);
+        return formatHits(hits);
+    }
+
+    /** Format daftar hit → blok bukti; NO_RESULTS bila null/kosong. */
+    public static String formatHits(List<Hit> hits) {
         if (hits == null || hits.isEmpty()) return NO_RESULTS;
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < hits.size(); i++) {
@@ -71,6 +94,41 @@ public final class WebSearch {
               .append(h.snippet).append("\n\n");
         }
         return sb.toString().trim();
+    }
+
+    /**
+     * Versi detail search(): jalankan query dan kembalikan Outcome.
+     * - networkError=true          → exception jaringan/timeout
+     * - httpCode != 200            → server gagal / throttling
+     * - 200 + hits kosong          → query benar-benar tanpa hasil
+     */
+    public static Outcome searchOutcome(String query) {
+        if (query == null || query.trim().isEmpty())
+            return new Outcome(false, 200, new ArrayList<Hit>());
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(
+                    DDG_URL + "?q=" + URLEncoder.encode(query, "UTF-8")
+                    + "&kl=wt-wt").openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(TIMEOUT_MS);
+            c.setReadTimeout(TIMEOUT_MS);
+            c.setInstanceFollowRedirects(true);
+            // UA Chrome — DDG menolak UA tanpa-browser di beberapa edge.
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13; "
+                    + "Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    + "Chrome/120.0.0.0 Mobile Safari/537.36");
+            c.setRequestProperty("Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            c.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
+
+            int code = c.getResponseCode();
+            if (code != 200) { close(c); return new Outcome(false, code, null); }
+            String html = readAll(c.getInputStream());
+            close(c);
+            return new Outcome(false, 200, parse(html));
+        } catch (Throwable t) {
+            return new Outcome(true, 0, null); // jaringan gagal
+        }
     }
 
     /** System prompt mode riset web (jawab HANYA dari bukti + sitasi). */
@@ -90,46 +148,12 @@ public final class WebSearch {
              + "QUESTION: " + (question == null ? "" : question);
     }
 
-    // ------------------------------------------------------------ query core
+    // ------------------------------------------------------------ query helpers
 
     /** Jalankan query → daftar hasil (null = error jaringan/HTTP). */
     public static List<Hit> query(String q) {
-        if (q == null || q.trim().isEmpty()) return null;
-        try {
-            String body = "q=" + URLEncoder.encode(q, "UTF-8") + "&kl=wt-wt";
-            byte[] payload = body.getBytes(StandardCharsets.UTF_8);
-
-            HttpURLConnection c = (HttpURLConnection)
-                    new URL(DDG_URL).openConnection();
-            c.setRequestMethod("POST");
-            c.setConnectTimeout(TIMEOUT_MS);
-            c.setReadTimeout(TIMEOUT_MS);
-            c.setInstanceFollowRedirects(true);
-            c.setDoOutput(true);
-            c.setRequestProperty("Content-Type",
-                    "application/x-www-form-urlencoded");
-            c.setRequestProperty("Content-Length",
-                    String.valueOf(payload.length));
-            // UA Chrome — DDG menolak UA tanpa-browser di beberapa edge.
-            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13; "
-                    + "Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) "
-                    + "Chrome/120.0.0.0 Mobile Safari/537.36");
-            c.setRequestProperty("Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-            c.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
-
-            try (OutputStream os = c.getOutputStream()) {
-                os.write(payload);
-                os.flush();
-            }
-            int code = c.getResponseCode();
-            if (code != 200) { close(c); return null; }
-            String html = readAll(c.getInputStream());
-            close(c);
-            return parse(html);
-        } catch (Throwable t) {
-            return null; // jaringan gagal → caller tolak jujur
-        }
+        Outcome o = searchOutcome(q);
+        return o.ok() ? o.hits : (o.hits != null ? o.hits : null);
     }
 
     private static void close(HttpURLConnection c) {
@@ -148,27 +172,48 @@ public final class WebSearch {
 
     // ------------------------------------------------------------ HTML parse
 
-    // Pola div.result hasil pencarian DDG HTML. <a rel="nofollow"
-    // class="result__a" href="//duckduckgo.com/l/?uddg=<enc>&rut=...">
-    // <b>JUDUL</b></a> ... <a class="result__snippet">SNIPPET</a>.
-    private static final Pattern RESULT = Pattern.compile(
-            "result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"   // 1 href, 2 judul
-          + ".*?result__snippet[^>]*>(.*?)</a>",                 // 3 snippet
+    // Pola markup DDG Lite (diverifikasi di tests/ws/live_*.html):
+    //   <a rel="nofollow" href="//duckduckgo.com/l/?uddg=<enc>&rut=..."
+    //      class='result-link'>JUDUL</a>
+    //   ... lalu baris berikutnya: <td class='result-snippet'>SNIPPET</td>
+    // Catatan: file live memakai single-quote class DAN &amp; sebagai
+    // pemisah param di href — pola href menerima keduanya.
+    private static final Pattern LINK = Pattern.compile(
+            "<a[^>]*href=\"([^\"]*)\"[^>]*class=['\\\"]result-link['\\\"][^>]*>(.*?)</a>",
+            Pattern.DOTALL);
+    private static final Pattern SNIPPET = Pattern.compile(
+            "<td[^>]*class=['\\\"]result-snippet['\\\"][^>]*>(.*?)</td>",
             Pattern.DOTALL);
 
+    /**
+     * Parse HTML DDG Lite: pasangkan setiap result-link dengan snippet
+     * ke-i (link dan snippet selalu 1:1 berurutan di markup lite —
+     * diverifikasi di 3 file live, jumlahnya selalu sama).
+     */
     public static List<Hit> parse(String html) {
         List<Hit> out = new ArrayList<>();
         if (html == null || html.isEmpty()) return out;
-        Matcher m = RESULT.matcher(html);
-        while (m.find() && out.size() < MAX_RESULTS) {
-            String href = m.group(1);
+        List<String> titles = new ArrayList<>();
+        List<String> hrefs = new ArrayList<>();
+        Matcher m = LINK.matcher(html);
+        while (m.find() && titles.size() < MAX_RESULTS) {
             String title = htmlToText(m.group(2));
-            String snippet = htmlToText(m.group(3));
-            String url = unwrap(href);
-            if (url == null || title == null || title.isEmpty()) continue;
+            if (title == null || title.isEmpty()) continue;
+            titles.add(title);
+            hrefs.add(m.group(1));
+        }
+        List<String> snips = new ArrayList<>();
+        m = SNIPPET.matcher(html);
+        while (m.find() && snips.size() < titles.size()) {
+            snips.add(htmlToText(m.group(1)));
+        }
+        for (int i = 0; i < titles.size(); i++) {
+            String url = unwrap(hrefs.get(i));
+            String snippet = i < snips.size() ? snips.get(i) : "";
+            if (url == null) continue;
             if (snippet.length() > MAX_SNIPPET)
                 snippet = snippet.substring(0, MAX_SNIPPET) + "…";
-            out.add(new Hit(title, url, snippet));
+            out.add(new Hit(titles.get(i), url, snippet));
         }
         return out;
     }
