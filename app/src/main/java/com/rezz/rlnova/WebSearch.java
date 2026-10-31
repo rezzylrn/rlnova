@@ -12,25 +12,28 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * WebSearch (v1.2.3): pencarian web keyless untuk toggle riset di chat.
+ * WebSearch (v1.2.4): pencarian web keyless untuk toggle riset di chat.
  *
- * Endpoint: DuckDuckGo Lite ("https://lite.duckduckgo.com/lite/") — GET
- * q=<query>&kl=wt-wt, TANPA API key, TANPA layanan berbayar. Respons HTML
- * di-parse dengan regex ke daftar {judul, URL, snippet} (maks 6 hasil):
- * anchor class='result-link' + <td class='result-snippet'>. Redirect
- * eksternal (//duckduckgo.com/l/?uddg=...) di-decode ke URL asli.
+ * v1.2.4 — MULTI-ENDPOINT FALLBACK (urut, pertama yang berhasil menang):
+ *   (a) DDG Lite   https://lite.duckduckgo.com/lite/?q=... (HTML)
+ *   (b) Bing HTML  https://www.bing.com/search?q=...       (HTML, li b_algo)
+ *   (c) Wikipedia  https://id.wikipedia.org/w/api.php?...  (JSON, list=search)
  *
- * v1.2.3: searchOutcome() membedakan sebab kegagalan (network / HTTP code /
- * 200 tapi 0 hasil) supaya GenerationService menampilkan pesan yang benar,
- * bukan selalu menyalahkan koneksi user. Parser diverifikasi terhadap 3
- * file HTML live di tests/ws/live_*.html (ParseTest).
+ * Latar: v1.2.3 hanya DDG Lite dan DDG kadang menandai client sebagai bot
+ * (HTTP 202, 0 hasil) — user melihat "No internet connection" padahal HP
+ * online. Kini tiap endpoint dicatat sebab gagalnya (exception class+message
+ * / HTTP code / 0 hasil) di Outcome.failReasons; bila SEMUA gagal,
+ * GenerationService TIDAK lagi menghentikan chat — lanjut pengetahuan dasar
+ * model dengan warning.
+ *
+ * Parser diverifikasi terhadap file live di tests/ws/ (ParseTest):
+ *   live_*.html (DDG), live_bing_*.html (Bing), live_wiki_*.json (Wikipedia).
  *
  * Kontrak untuk pemanggil (GenerationService):
- *   - search(query)  → null/""/marker "NO_RESULTS" = gagal/kosong (cek isEmpty)
- *   - searchOutcome(q) → detail sebab gagal (networkError / httpCode / hits)
- *   - isEmpty(s)     → true bila evidence tidak layak dipakai
+ *   - searchOutcome(q) → Outcome (ok() / detail gagal per endpoint)
+ *   - isEmpty(s)       → true bila evidence tidak layak dipakai
  *   - researchSystemPrompt() / userPrompt(q, evidence) → prompt riset berbasis
- *     bukti; model DILARANG jawab di luar bukti, sitasi wajib [1]..[6].
+ *     bukti; model DILARANG jawab di luar bukti, sitasi wajib [1]..[n].
  *
  * Semua network di sini HARUS dipanggil dari worker thread (sudah —
  * dipanggil dari EXECUTOR GenerationService, bukan UI thread).
@@ -38,11 +41,20 @@ import java.util.regex.Pattern;
 public final class WebSearch {
 
     private static final String DDG_URL = "https://lite.duckduckgo.com/lite/";
+    private static final String BING_URL = "https://www.bing.com/search";
+    private static final String WIKI_URL =
+            "https://id.wikipedia.org/w/api.php";
     private static final int TIMEOUT_MS = 15000;
     private static final int MAX_RESULTS = 6;
     private static final int MAX_SNIPPET = 320;
+    /** Audit Argon v1.2.4: evidence ke model dibatasi ~3500 karakter pertama. */
+    private static final int MAX_EVIDENCE_CHARS = 3500;
 
     public static final String NO_RESULTS = "NO_RESULTS";
+
+    private static final String UA_CHROME =
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+            + "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
     /** Hasil satu entri pencarian. */
     public static final class Hit {
@@ -62,79 +74,177 @@ public final class WebSearch {
 
     // ------------------------------------------------------------ query core
 
-    /** Sebab kegagalan query — dipakai untuk pesan error yang dibedakan. */
+    /**
+     * Sebab kegagalan query — v1.2.4: hasil percobaan TIAP endpoint
+     * tercatat di failReasons (bukan cuma boolean networkError), supaya
+     * pesan ke user memuat detail asli (exception class+message / HTTP code).
+     */
     public static final class Outcome {
-        public final boolean networkError; // exception (timeout, DNS, dsb)
-        public final int httpCode;         // != 200 bila server menolak
-        public final List<Hit> hits;       // null bila error; bisa kosong
-        Outcome(boolean net, int code, List<Hit> h) {
-            networkError = net; httpCode = code; hits = h;
+        public final boolean networkError;          // minimal satu exception jaringan
+        public final int httpCode;                  // HTTP code endpoint terakhir
+        public final List<Hit> hits;                // null bila error; bisa kosong
+        /** v1.2.4: alasan gagal per endpoint, urut percobaan. Bisa kosong. */
+        public final List<String> failReasons;
+        public Outcome(boolean net, int code, List<Hit> h, List<String> fails) {
+            networkError = net; httpCode = code; hits = h; failReasons = fails;
         }
         public boolean ok() { return !networkError && httpCode == 200
                 && hits != null && !hits.isEmpty(); }
+        /** Ringkasan satu-baris semua sebab gagal — untuk pesan user/log. */
+        public String failSummary() {
+            if (failReasons == null || failReasons.isEmpty())
+                return "no failure recorded";
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < failReasons.size(); i++) {
+                if (i > 0) sb.append("; ");
+                sb.append('[').append(i + 1).append("] ")
+                  .append(failReasons.get(i));
+            }
+            return sb.toString();
+        }
     }
 
     /**
-     * Cari web, kembalikan blok bukti terformat ([1] judul — URL — snippet…).
-     * null/NO_RESULTS bila gagal jaringan / tidak ada hasil / parse kosong.
+     * Cari web, kembalikan blok bukti terformat ([1] judul — URL — snippet…),
+     * dipotong maks MAX_EVIDENCE_CHARS karakter pertama. null/NO_RESULTS bila
+     * gagal jaringan / tidak ada hasil / parse kosong.
      */
     public static String search(String query) {
         List<Hit> hits = query(query);
         return formatHits(hits);
     }
 
-    /** Format daftar hit → blok bukti; NO_RESULTS bila null/kosong. */
+    /** Format daftar hit → blok bukti (dipotong maks ~3500 char); NO_RESULTS bila kosong. */
     public static String formatHits(List<Hit> hits) {
         if (hits == null || hits.isEmpty()) return NO_RESULTS;
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < hits.size(); i++) {
             Hit h = hits.get(i);
+            if (sb.length() > 0 && sb.length() + 40 > MAX_EVIDENCE_CHARS) break;
             sb.append('[').append(i + 1).append("] ").append(h.title)
               .append(" — ").append(h.url).append('\n')
               .append(h.snippet).append("\n\n");
+            if (sb.length() > MAX_EVIDENCE_CHARS) {
+                sb.setLength(MAX_EVIDENCE_CHARS);
+                sb.append("…"); // dipotong — sisanya tidak dikirim ke model
+                break;
+            }
         }
         return sb.toString().trim();
     }
 
     /**
-     * Versi detail search(): jalankan query dan kembalikan Outcome.
-     * - networkError=true          → exception jaringan/timeout
-     * - httpCode != 200            → server gagal / throttling
-     * - 200 + hits kosong          → query benar-benar tanpa hasil
+     * Versi detail search(): coba TIAP endpoint berurutan, pertama yang
+     * menghasilkan >= 1 hit menang. Tiap kegagalan dicatat ke
+     * Outcome.failReasons (exception class+message atau HTTP code atau
+     * "0 hasil"). Bila semua gagal: ok()==false, failSummary() menjelaskan.
      */
     public static Outcome searchOutcome(String query) {
         if (query == null || query.trim().isEmpty())
-            return new Outcome(false, 200, new ArrayList<Hit>());
-        try {
-            HttpURLConnection c = (HttpURLConnection) new URL(
-                    DDG_URL + "?q=" + URLEncoder.encode(query, "UTF-8")
-                    + "&kl=wt-wt").openConnection();
-            c.setRequestMethod("GET");
-            c.setConnectTimeout(TIMEOUT_MS);
-            c.setReadTimeout(TIMEOUT_MS);
-            c.setInstanceFollowRedirects(true);
-            // UA Chrome — DDG menolak UA tanpa-browser di beberapa edge.
-            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13; "
-                    + "Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) "
-                    + "Chrome/120.0.0.0 Mobile Safari/537.36");
-            c.setRequestProperty("Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-            c.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
+            return new Outcome(false, 200, new ArrayList<Hit>(),
+                    new ArrayList<String>());
+        List<String> fails = new ArrayList<>();
+        boolean anyNetErr = false;
+        int lastCode = 0;
+        List<Hit> lastHits = null;
 
+        // (a) DDG Lite
+        try {
+            HttpURLConnection c = get(DDG_URL + "?q="
+                    + URLEncoder.encode(query, "UTF-8") + "&kl=wt-wt");
             int code = c.getResponseCode();
-            if (code != 200) { close(c); return new Outcome(false, code, null); }
-            String html = readAll(c.getInputStream());
-            close(c);
-            return new Outcome(false, 200, parse(html));
+            lastCode = code;
+            if (code == 200) {
+                List<Hit> h = parse(readAll(c.getInputStream()));
+                close(c);
+                lastHits = h;
+                if (!h.isEmpty())
+                    return new Outcome(false, 200, h, fails);
+                fails.add("ddg: 200 tapi 0 hasil");
+            } else {
+                close(c);
+                fails.add("ddg: HTTP " + code);
+            }
         } catch (Throwable t) {
-            return new Outcome(true, 0, null); // jaringan gagal
+            anyNetErr = true;
+            fails.add("ddg: " + t.getClass().getSimpleName() + ": "
+                    + msg(t));
         }
+
+        // (b) Bing HTML
+        try {
+            HttpURLConnection c = get(BING_URL + "?q="
+                    + URLEncoder.encode(query, "UTF-8"));
+            int code = c.getResponseCode();
+            lastCode = code;
+            if (code == 200) {
+                List<Hit> h = parseBing(readAll(c.getInputStream()));
+                close(c);
+                lastHits = h;
+                if (!h.isEmpty())
+                    return new Outcome(false, 200, h, fails);
+                fails.add("bing: 200 tapi 0 hasil");
+            } else {
+                close(c);
+                fails.add("bing: HTTP " + code);
+            }
+        } catch (Throwable t) {
+            anyNetErr = true;
+            fails.add("bing: " + t.getClass().getSimpleName() + ": "
+                    + msg(t));
+        }
+
+        // (c) Wikipedia API (id)
+        try {
+            HttpURLConnection c = get(WIKI_URL + "?action=query&list=search"
+                    + "&srsearch=" + URLEncoder.encode(query, "UTF-8")
+                    + "&format=json&srlimit=" + MAX_RESULTS);
+            int code = c.getResponseCode();
+            lastCode = code;
+            if (code == 200) {
+                List<Hit> h = parseWikipedia(readAll(c.getInputStream()));
+                close(c);
+                lastHits = h;
+                if (!h.isEmpty())
+                    return new Outcome(false, 200, h, fails);
+                fails.add("wikipedia: 200 tapi 0 hasil");
+            } else {
+                close(c);
+                fails.add("wikipedia: HTTP " + code);
+            }
+        } catch (Throwable t) {
+            anyNetErr = true;
+            fails.add("wikipedia: " + t.getClass().getSimpleName() + ": "
+                    + msg(t));
+        }
+
+        return new Outcome(anyNetErr, lastCode, lastHits, fails);
+    }
+
+    /** Message exception yang aman (null → nama class saja). */
+    private static String msg(Throwable t) {
+        String m = t.getMessage();
+        return (m == null || m.isEmpty()) ? t.toString() : m;
+    }
+
+    /** HttpURLConnection GET siap-pakai (UA Chrome, timeout 15 dtk). */
+    private static HttpURLConnection get(String url) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setRequestMethod("GET");
+        c.setConnectTimeout(TIMEOUT_MS);
+        c.setReadTimeout(TIMEOUT_MS);
+        c.setInstanceFollowRedirects(true);
+        c.setRequestProperty("User-Agent", UA_CHROME);
+        c.setRequestProperty("Accept",
+                "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8");
+        c.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
+        return c;
     }
 
     /** System prompt mode riset web (jawab HANYA dari bukti + sitasi). */
     public static String researchSystemPrompt() {
         return "You are a web research assistant. The user will give you search "
-             + "results from the web (numbered [1]..[6]) followed by their question. "
+             + "results from the web (numbered [1]..[n]) followed by their question. "
              + "Answer the question using ONLY the information in these search "
              + "results. Cite sources inline with their numbers, like [1] or [2][3]. "
              + "If the search results do not contain enough information, say so "
@@ -176,19 +286,16 @@ public final class WebSearch {
     //   <a rel="nofollow" href="//duckduckgo.com/l/?uddg=<enc>&rut=..."
     //      class='result-link'>JUDUL</a>
     //   ... lalu baris berikutnya: <td class='result-snippet'>SNIPPET</td>
-    // Catatan: file live memakai single-quote class DAN &amp; sebagai
-    // pemisah param di href — pola href menerima keduanya.
     private static final Pattern LINK = Pattern.compile(
-            "<a[^>]*href=\"([^\"]*)\"[^>]*class=['\\\"]result-link['\\\"][^>]*>(.*?)</a>",
+            "<a[^>]*href=\"([^\"]*)\"[^>]*class=['\"]result-link['\"][^>]*>(.*?)</a>",
             Pattern.DOTALL);
     private static final Pattern SNIPPET = Pattern.compile(
-            "<td[^>]*class=['\\\"]result-snippet['\\\"][^>]*>(.*?)</td>",
+            "<td[^>]*class=['\"]result-snippet['\"][^>]*>(.*?)</td>",
             Pattern.DOTALL);
 
     /**
-     * Parse HTML DDG Lite: pasangkan setiap result-link dengan snippet
-     * ke-i (link dan snippet selalu 1:1 berurutan di markup lite —
-     * diverifikasi di 3 file live, jumlahnya selalu sama).
+            "<a[^>]*href=\"([^\"]*)\"[^>]*class=['\\"]result-link['\\"][^>]*>(.*?)</a>",
+     * ke-i (link dan snippet selalu 1:1 berurutan di markup lite).
      */
     public static List<Hit> parse(String html) {
         List<Hit> out = new ArrayList<>();
@@ -216,6 +323,118 @@ public final class WebSearch {
             out.add(new Hit(titles.get(i), url, snippet));
         }
         return out;
+    }
+
+    // ------------------------------------------------------------ Bing parse
+
+    // Markup Bing (diverifikasi di tests/ws/live_bing_*.html): hasil di
+    // <li class="b_algo">…</li>, tiap blok berisi:
+    //   <a class="tilk" ... href="https://...">          → URL asli
+    //   <h2>…judul (boleh berisi <strong>)…</h2></a>     → judul
+    //   <div class="b_caption"><p ...>SNIPPET</p></div>  → snippet
+    private static final Pattern BING_BLOCK = Pattern.compile(
+            "<li[^>]*class=\"b_algo\"[^>]*>(.*?)</li>", Pattern.DOTALL);
+    private static final Pattern BING_LINK = Pattern.compile(
+            "<a[^>]*class=\"tilk\"[^>]*href=\"([^\"]+)\"");
+    private static final Pattern BING_TITLE = Pattern.compile(
+            "<h2[^>]*>(.*?)</h2>", Pattern.DOTALL);
+    private static final Pattern BING_SNIPPET = Pattern.compile(
+            "<div[^>]*class=\"b_caption\"[^>]*>.*?<p[^>]*>(.*?)</p>",
+            Pattern.DOTALL);
+
+    public static List<Hit> parseBing(String html) {
+        List<Hit> out = new ArrayList<>();
+        if (html == null || html.isEmpty()) return out;
+        Matcher mb = BING_BLOCK.matcher(html);
+        while (mb.find() && out.size() < MAX_RESULTS) {
+            String block = mb.group(1);
+            Matcher mu = BING_LINK.matcher(block);
+            if (!mu.find()) continue;
+            String url = unwrap(mu.group(1));
+            if (url == null || !url.startsWith("http")) continue;
+            String title = "";
+            Matcher mt = BING_TITLE.matcher(block);
+            if (mt.find()) title = htmlToText(mt.group(1));
+            if (title.isEmpty()) continue;
+            String snippet = "";
+            Matcher ms = BING_SNIPPET.matcher(block);
+            if (ms.find()) snippet = htmlToText(ms.group(1));
+            if (snippet.length() > MAX_SNIPPET)
+                snippet = snippet.substring(0, MAX_SNIPPET) + "…";
+            out.add(new Hit(title, url, snippet));
+        }
+        return out;
+    }
+
+    // -------------------------------------------------------- Wikipedia parse
+
+    // JSON API (diverifikasi di tests/ws/live_wiki_*.json):
+    // query.search[] = { title, snippet (HTML dengan <span class="searchmatch">) }
+    private static final Pattern WIKI_TITLE = Pattern.compile(
+            "\"title\":\"((?:[^\"\\\\]|\\\\.)*)\"");
+    private static final Pattern WIKI_SNIPPET = Pattern.compile(
+            "\"snippet\":\"((?:[^\"\\\\]|\\\\.)*)\"");
+
+    /**
+     * Parse JSON Wikipedia API (list=search) → daftar Hit.
+     * URL dibangun dari judul: https://id.wikipedia.org/wiki/<judul>
+     * (spasi → underscore, title URL-encoded).
+     */
+    public static List<Hit> parseWikipedia(String json) {
+        List<Hit> out = new ArrayList<>();
+        if (json == null || json.isEmpty()) return out;
+        Matcher mt = WIKI_TITLE.matcher(json);
+        Matcher ms = WIKI_SNIPPET.matcher(json);
+        while (mt.find() && out.size() < MAX_RESULTS) {
+            String title = mt.group(1);
+            // lewati key di luar array search (mis. "title" di namespace meta)
+            if (!ms.find()) break;
+            String snippet = unescapeJson(ms.group(1));
+            String cleanTitle = htmlToText(unescapeJson(title));
+            if (cleanTitle.isEmpty()) continue;
+            snippet = htmlToText(snippet);
+            if (snippet.length() > MAX_SNIPPET)
+                snippet = snippet.substring(0, MAX_SNIPPET) + "…";
+            String url;
+            try {
+                url = "https://id.wikipedia.org/wiki/"
+                        + URLEncoder.encode(
+                              cleanTitle.replace(' ', '_'), "UTF-8");
+            } catch (Exception e) { url = "https://id.wikipedia.org/"; }
+            out.add(new Hit(cleanTitle, url, snippet));
+        }
+        return out;
+    }
+
+    /** Unescape string JSON: \\n, ", \\\\, \\uXXXX, \\/. */
+    private static String unescapeJson(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char n = s.charAt(++i);
+                switch (n) {
+                    case 'n': sb.append('\n'); break;
+                    case 't': sb.append('\t'); break;
+                    case 'r': break;
+                    case '"': sb.append('"'); break;
+                    case '/': sb.append('/'); break;
+                    case '\\': sb.append('\\'); break;
+                    case 'u':
+                        if (i + 4 < s.length()) {
+                            try {
+                                sb.append((char) Integer.parseInt(
+                                        s.substring(i + 1, i + 5), 16));
+                                i += 4;
+                            } catch (NumberFormatException e) { }
+                        }
+                        break;
+                    default: sb.append(n);
+                }
+            } else sb.append(c);
+        }
+        return sb.toString();
     }
 
     /**

@@ -361,40 +361,30 @@ public class GenerationService extends Service {
         notifyToken();
 
         EXECUTOR.execute(() -> {
-            // 0. v1.2.3: toggle research ON → cari web DULU (worker thread,
-            //    sebelum nyentuh engine). Pesan error dibedakan sesuai sebab:
-            //    jaringan / HTTP server / 200 tapi 0 hasil — jangan menyalahkan
-            //    koneksi user untuk kegagalan server.
+            // 0. v1.2.3→v1.2.4: toggle research ON → cari web DULU (worker
+            //    thread, sebelum nyentuh engine). v1.2.4: bila SEMUA endpoint
+            //    gagal (jaringan / HTTP / 0 hasil), JANGAN hentikan chat —
+            //    lanjut generasi dari pengetahuan dasar model dengan warning
+            //    di awal jawaban (failSummary() membawa detail asli tiap
+            //    endpoint). Retry user tetap mencoba search dari nol (jalur
+            //    ini jalan lagi tiap generation).
             String evidence = null;
+            String searchWarn = null;
             if (web) {
                 WebSearch.Outcome o = WebSearch.searchOutcome(userText);
-                if (o.networkError) {
-                    st.generating = false;
-                    st.stopReason = -1;
-                    st.error = "No internet connection — check Wi-Fi or mobile data, then try again.";
-                    notifyDone();
-                    stopForeground(true);
-                    stopSelf();
-                    return;
+                if (o.ok()) {
+                    evidence = WebSearch.formatHits(o.hits);
+                    if (WebSearch.isEmpty(evidence)) {
+                        o = null; // situs jawab 200 tapi bukti kosong → fallback
+                    }
                 }
-                if (o.httpCode != 200) {
-                    st.generating = false;
-                    st.stopReason = -1;
-                    st.error = "Search service unavailable (HTTP " + o.httpCode + "). Try again later.";
-                    notifyDone();
-                    stopForeground(true);
-                    stopSelf();
-                    return;
-                }
-                evidence = WebSearch.formatHits(o.hits);
-                if (WebSearch.isEmpty(evidence)) {
-                    st.generating = false;
-                    st.stopReason = -1;
-                    st.error = "No results found for this query.";
-                    notifyDone();
-                    stopForeground(true);
-                    stopSelf();
-                    return;
+                if (evidence == null) {
+                    String fs = o == null ? "empty evidence"
+                            : o.failSummary();
+                    searchWarn = "⚠️ Pencarian web gagal (" + fs
+                            + ") — menjawab dari pengetahuan dasar.";
+                    android.util.Log.w("GenerationService",
+                            "web search fallback: " + fs);
                 }
             }
             // 1. Library native
@@ -450,12 +440,19 @@ public class GenerationService extends Service {
                     history = history.subList(0, history.size() - 1);
                 }
             }
-            final String prompt = web
-                    ? ChatTemplates.build(m.chatTemplate,
-                          WebSearch.researchSystemPrompt(),
-                          history, WebSearch.userPrompt(userText, evidence))
-                    : ChatTemplates.build(m.chatTemplate, system,
-                          history, userText);
+            final String searchWarnF = searchWarn;
+            final String prompt;
+            if (web && searchWarn == null) {
+                // Search sukses: jalur v1.2.3 tetap — jawab HANYA dari bukti + sitasi.
+                prompt = ChatTemplates.build(m.chatTemplate,
+                        WebSearch.researchSystemPrompt(),
+                        history, WebSearch.userPrompt(userText, evidence));
+            } else {
+                // Fallback v1.2.4 (atau riset non-web): prompt normal, model
+                // menjawab dari pengetahuan dasarnya.
+                prompt = ChatTemplates.build(m.chatTemplate, system,
+                        history, userText);
+            }
 
             LlamaEngine.GenParams p = new LlamaEngine.GenParams();
             final LlamaEngine eng;
@@ -467,6 +464,14 @@ public class GenerationService extends Service {
                         new LlamaEngine.Callback() {
                 @Override public void onNativeToken(String piece) {
                     GenerationState g = GenerationState.get();
+                    // v1.2.4: bila search web gagal total, warning kecil
+                    // ditempel di awal jawaban (sekali, sebelum token pertama).
+                    if (searchWarnF != null) {
+                        synchronized (g.raw) {
+                            if (g.raw.length() == 0)
+                                g.raw.append(searchWarnF).append("\n\n");
+                        }
+                    }
                     synchronized (g.raw) {
                         g.raw.append(piece);
                     }
